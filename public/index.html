@@ -3,30 +3,64 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Hello, World!</title>
+		<meta http-equiv="refresh" content="0; url=/events?app=ca" />
+		<title>OurPortal Scheduler</title>
+		<style>
+			:root {
+				--bg: #f5f7f6;
+				--text: #17221d;
+				--muted: #68756f;
+				--accent: #176b4a;
+				--line: #dfe6e2;
+			}
+			* { box-sizing: border-box; }
+			html {
+				font-family: "Source Sans 3", "Segoe UI", sans-serif;
+				color: var(--text);
+				background: var(--bg);
+			}
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				padding: 32px 20px;
+				line-height: 1.45;
+			}
+			main { max-width: 28rem; width: 100%; }
+			h1 {
+				margin: 0 0 10px;
+				font-size: clamp(1.75rem, 3vw, 2.1rem);
+				font-weight: 800;
+				letter-spacing: -0.03em;
+				line-height: 1.15;
+			}
+			p { margin: 0 0 22px; color: var(--muted); }
+			nav {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 14px 20px;
+				padding-top: 4px;
+				border-top: 1px solid var(--line);
+			}
+			a {
+				color: var(--accent);
+				text-decoration: none;
+				font-weight: 650;
+			}
+			a:hover { text-decoration: underline; }
+		</style>
 	</head>
 	<body>
-		<h1 id="heading"></h1>
-		<p>This page comes from a static asset stored at `public/index.html` as configured in `wrangler.jsonc`.</p>
-		<button id="button" type="button">Fetch a random UUID</button>
-		<output id="random" for="button"></output>
-		<script>
-			fetch('/message')
-				.then((resp) => resp.text())
-				.then((text) => {
-					const h1 = document.getElementById('heading');
-					h1.textContent = text;
-				});
-
-			const button = document.getElementById("button");
-			button.addEventListener("click", () => {
-				fetch('/random')
-					.then((resp) => resp.text())
-					.then((text) => {
-						const random = document.getElementById('random');
-						random.textContent = text;
-					});
-			});
-		</script>
+		<main>
+			<h1>OurPortal Scheduler</h1>
+			<p>Continue to Events.</p>
+			<nav aria-label="Modes">
+				<a href="/events?app=ca">CA</a>
+				<a href="/events?app=rc">RC</a>
+				<a href="/events?app=sc">Other</a>
+			</nav>
+		</main>
 	</body>
 </html>
