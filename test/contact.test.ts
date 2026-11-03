@@ -38,6 +38,10 @@ describe('scheduler behavior in source', () => {
   it('shows congregation captains only for a Cleaning department', () => {
     expect(app).toContain("selectedDepartment.name==='Cleaning'");
     expect(app).toContain('Congregation Captains');
+    expect(app).toContain('deps.length===1');
+    expect(app).toContain('>Volunteers</button><button id="nav-task">Tasks & Times</button><button id="nav-avail">Availability</button>');
+    expect(app).not.toContain('>Simple Event<');
+    expect(app).not.toContain('Upgrade to Full Organization</button>');
     expect(worker).toContain("d.name!=='Cleaning'");
     expect(worker).toContain('congregation_captains');
   });
