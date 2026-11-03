@@ -42,10 +42,24 @@ describe('scheduler behavior in source', () => {
     expect(worker).toContain('congregation_captains');
   });
 
+  it('serves the events app at /events and leaves /ca in place', () => {
+    expect(worker).toContain("p.match(/^\\/events(?:\\/([^/]+))?$/)");
+    expect(worker).toContain("/^\\/events(?:\\/|$)/");
+    expect(worker).toContain("p.match(/^\\/(ca|rc|sc)(?:\\/events\\/([^/]+))?$/)");
+    expect(app).toContain('const eventsListHref=`/events?app=${cfg.app}`');
+    expect(app).not.toContain('/${cfg.app}/events/');
+  });
+
   it('does not add a route or replace the public homepage', () => {
+    const home = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
     expect(wrangler).not.toMatch(/"routes"/);
     expect(wrangler).not.toContain('/events');
     expect(wrangler).toContain('"name": "ourportal-scheduler"');
     expect(wrangler).toContain('"database_name": "ourportal-scheduler-prod"');
+    expect(home).toContain('Continue to Events.');
+    expect(home).toContain('href="/events?app=ca"');
+    expect(home).toContain('href="/events?app=rc"');
+    expect(home).toContain('href="/events?app=sc"');
+    expect(home).not.toContain('Hello World');
   });
 });

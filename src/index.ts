@@ -55,7 +55,7 @@ async function validateAccess(request:Request){
 function needsAccess(path:string){
  // Public token/code-scoped volunteer routes: /entry/*, /api/entry/*, /e/* and /api/e/*.
  // Administrator event applications and event APIs remain protected by Cloudflare Access.
- return /^\/(?:ca|rc|sc)(?:\/|$)/.test(path)||path==='/api/me'||/^\/api\/events(?:\/|$)/.test(path);
+ return /^\/(?:ca|rc|sc)(?:\/|$)/.test(path)||/^\/events(?:\/|$)/.test(path)||path==='/api/me'||/^\/api\/events(?:\/|$)/.test(path);
 }
 
 function accessEmail(request:Request){
@@ -1130,10 +1130,11 @@ async function deleteCaptain(env:Env,eventId:string,id:string,departmentId:strin
   return json({ok:true,deleted:id});
 }
 
-function shell(app:AppCode,eventId?:string){
+function shell(app:AppCode,eventId?:string,eventsPath=false){
  const title=APP_NAMES[app], pageData=JSON.stringify({app,eventId:eventId||null}).replace(/</g,'\\u003c');
+ const modeHref=(code:AppCode)=>eventsPath?`/events?app=${code}`:`/${code}`;
  return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>OurPortal — ${title}</title><link rel="stylesheet" href="/app.css"></head>
-<body><header class="topbar"><div class="brand-wrap"><div class="brand">OurPortal</div><div class="product">Scheduler</div></div><nav class="app-switcher"><a href="/ca" ${app==='ca'?'aria-current="page"':''}>CA</a><a href="/rc" ${app==='rc'?'aria-current="page"':''}>RC</a><a href="/sc" ${app==='sc'?'aria-current="page"':''}>Other</a></nav></header>
+<body><header class="topbar"><div class="brand-wrap"><div class="brand">OurPortal</div><div class="product">Scheduler</div></div><nav class="app-switcher"><a href="${modeHref('ca')}" ${app==='ca'?'aria-current="page"':''}>CA</a><a href="${modeHref('rc')}" ${app==='rc'?'aria-current="page"':''}>RC</a><a href="${modeHref('sc')}" ${app==='sc'?'aria-current="page"':''}>Other</a></nav></header>
 <main id="app-root" class="page"></main><script>window.__OURPORTAL__=${pageData};</script><script src="/app.js" defer></script></body></html>`,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
 }
 
@@ -1151,6 +1152,7 @@ export default {async fetch(request,env):Promise<Response>{
   if(/^\/confirm\/[^/]+$/.test(p))return confirmationShell();
   if(/^\/entry\/[^/]+$/.test(p)||/^\/e\/[^/]+$/.test(p))return entryShell();
   const page=p.match(/^\/(ca|rc|sc)(?:\/events\/([^/]+))?$/); if(page)return shell(page[1] as AppCode,page[2]?decodeURIComponent(page[2]):undefined);
+  const eventsPage=p.match(/^\/events(?:\/([^/]+))?$/); if(eventsPage){const requested=u.searchParams.get('app'); const app:AppCode=requested==='ca'||requested==='rc'||requested==='sc'?requested:'ca'; return shell(app,eventsPage[1]?decodeURIComponent(eventsPage[1]):undefined,true);}
   if(p==='/api/events'&&request.method==='GET')return listEvents(request,env);
   if(p==='/api/events'&&request.method==='POST'){if(!await isFullAdmin(env,email))return json({ok:false,error:'Full Admin permission required.'},403);return createEvent(request,env);}
   const em=p.match(/^\/api\/events\/([^/]+)$/);
