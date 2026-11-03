@@ -1,8 +1,11 @@
+import { emailFormatError, phoneFormatError } from './contact';
+
 type AppCode = 'ca' | 'rc' | 'sc';
 type Role = 'Overseer' | 'Assistant' | 'Keyman' | 'Captain';
 
 interface EventRow {
   id:string; app:AppCode; name:string; start_date:string; end_date:string; status:string; structure_mode:'Simple'|'Departmental'|'Full';
+  department_name:string;
   entry_enabled:number; entry_token_hash:string|null; schedule_locked_at:string|null; created_at:string; updated_at:string;
 }
 interface Env {
@@ -137,7 +140,7 @@ const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
 async function body(req:Request){try{const x=await req.json();return x&&typeof x==='object'&&!Array.isArray(x)?x as Record<string,unknown>:null}catch{return null}}
 
 async function getEvent(env:Env,id:string){
-  return env.DB.prepare(`SELECT id,app,name,start_date,end_date,status,structure_mode,entry_enabled,entry_token_hash,schedule_locked_at,created_at,updated_at FROM events WHERE id=?`).bind(id).first<EventRow>();
+  return env.DB.prepare(`SELECT id,app,name,start_date,end_date,status,structure_mode,department_name,entry_enabled,entry_token_hash,schedule_locked_at,created_at,updated_at FROM events WHERE id=?`).bind(id).first<EventRow>();
 }
 async function listEvents(req:Request,env:Env){
   const u=new URL(req.url), app=u.searchParams.get('app'), status=u.searchParams.get('status')||'Active',email=accessEmail(req);
@@ -160,22 +163,33 @@ async function ensureFullCommitteePositions(env:Env,eventId:string){
   if(stmts.length)await env.DB.batch(stmts);
 }
 
+async function ensureDepartmentNamed(env:Env,eventId:string,name:string){
+  if(!name)return;
+  const existing=await env.DB.prepare(`SELECT id FROM departments WHERE event_id=? AND name=?`).bind(eventId,name).first();
+  if(existing)return;
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO departments(id,event_id,name,active,sort_order,created_at,updated_at) VALUES(?,?,?,1,COALESCE((SELECT MAX(sort_order)+1 FROM departments WHERE event_id=?),0),?,?)`).bind(crypto.randomUUID(),eventId,name,eventId,now,now).run();
+}
 async function createEvent(req:Request,env:Env){
   const b=await body(req); if(!b)return bad('Invalid JSON');
-  const app=clean(b.app),name=clean(b.name),sd=clean(b.start_date),ed=clean(b.end_date),structure=clean(b.structure_mode)||'Simple';
+  const app=clean(b.app),name=clean(b.name),sd=clean(b.start_date),ed=clean(b.end_date),structure=clean(b.structure_mode)||'Simple',departmentName=clean(b.department_name);
   if(!isApp(app)||!name||!validDate(sd)||!validDate(ed)||ed<sd||!['Simple','Full'].includes(structure))return bad('Check event name, dates, and structure');
+  if(departmentName.length>80)return bad('Department name is too long.');
   const id=crypto.randomUUID(),now=new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO events(id,app,name,start_date,end_date,status,entry_enabled,structure_mode,created_at,updated_at) VALUES(?,?,?,?,?,'Active',0,?,?,?)`).bind(id,app,name,sd,ed,structure,now,now).run();
+  await env.DB.prepare(`INSERT INTO events(id,app,name,start_date,end_date,status,entry_enabled,structure_mode,department_name,created_at,updated_at) VALUES(?,?,?,?,?,'Active',0,?,?,?,?,?)`).bind(id,app,name,sd,ed,structure,departmentName,now,now).run();
+  if(departmentName)await ensureDepartmentNamed(env,id,departmentName);
   if(structure==='Full')await ensureFullCommitteePositions(env,id);
   return json({ok:true,event:await getEvent(env,id)},201);
 }
 async function patchEvent(req:Request,env:Env,id:string){
   const e=await getEvent(env,id); if(!e)return nf('Event not found');
   const b=await body(req); if(!b)return bad('Invalid JSON');
-  const name=b.name===undefined?e.name:clean(b.name),sd=b.start_date===undefined?e.start_date:clean(b.start_date),ed=b.end_date===undefined?e.end_date:clean(b.end_date),status=b.status===undefined?e.status:clean(b.status),structure=b.structure_mode===undefined?e.structure_mode:clean(b.structure_mode);
+  const name=b.name===undefined?e.name:clean(b.name),sd=b.start_date===undefined?e.start_date:clean(b.start_date),ed=b.end_date===undefined?e.end_date:clean(b.end_date),status=b.status===undefined?e.status:clean(b.status),structure=b.structure_mode===undefined?e.structure_mode:clean(b.structure_mode),departmentName=b.department_name===undefined?(e.department_name||''):clean(b.department_name);
   if(!name||!validDate(sd)||!validDate(ed)||ed<sd||!['Active','Archived'].includes(status)||!['Simple','Full'].includes(structure))return bad('Invalid event values');
+  if(departmentName.length>80)return bad('Department name is too long.');
   if(e.structure_mode==='Full'&&structure==='Simple')return bad('A Full Organization event cannot be changed back to Simple while organization data may exist.');
-  await env.DB.prepare(`UPDATE events SET name=?,start_date=?,end_date=?,status=?,structure_mode=?,updated_at=? WHERE id=?`).bind(name,sd,ed,status,structure,new Date().toISOString(),id).run();
+  await env.DB.prepare(`UPDATE events SET name=?,start_date=?,end_date=?,status=?,structure_mode=?,department_name=?,updated_at=? WHERE id=?`).bind(name,sd,ed,status,structure,departmentName,new Date().toISOString(),id).run();
+  if(departmentName)await ensureDepartmentNamed(env,id,departmentName);
   if(structure==='Full')await ensureFullCommitteePositions(env,id);
   return json({ok:true,event:await getEvent(env,id)});
 }
@@ -206,6 +220,8 @@ function parseVolunteer(b:Record<string,unknown>){
   const roles=Array.isArray(b.roles)?[...new Set(b.roles.map(clean).filter(x=>ROLES.includes(x as Role)))]:[];
   if(!first||!last)return {error:'First and last name are required'} as const;
   if(gender!=='Male'&&gender!=='Female')return {error:'Gender must be Male or Female'} as const;
+  const emailError=emailFormatError(email); if(emailError)return {error:emailError} as const;
+  const phoneError=phoneFormatError(phone); if(phoneError)return {error:phoneError} as const;
   return {value:{first,last,gender,email,phone,family,active,roles}} as const;
 }
 async function createVolunteer(req:Request,env:Env,eventId:string){
@@ -756,7 +772,7 @@ async function shortEntryData(env:Env,code:string){const x=await shortEntryConte
 async function addEntryForContext(req:Request,env:Env,x:any){
   const b=await body(req);if(!b)return bad('Invalid JSON');
   const rawList=Array.isArray(b.volunteers)?b.volunteers:[b];if(!rawList.length)return bad('No volunteers supplied');if(rawList.length>500)return bad('Too many volunteers in one request');
-  const parsed:any[]=[];for(let i=0;i<rawList.length;i++){const raw=rawList[i];if(!raw||typeof raw!=='object')return bad('Invalid volunteer row');const p=parseVolunteer(raw as Record<string,unknown>);if('error'in p)return bad(p.error);if(!p.value.email||!p.value.phone)return bad(rawList.length>1?`Row ${i+1}: Email and phone number are required`:'Email and phone number are required');parsed.push(p.value)}
+  const parsed:any[]=[];for(let i=0;i<rawList.length;i++){const raw=rawList[i];if(!raw||typeof raw!=='object')return bad('Invalid volunteer row');const p=parseVolunteer(raw as Record<string,unknown>);if('error'in p)return bad(rawList.length>1?`Row ${i+1}: ${p.error}`:p.error);parsed.push(p.value)}
   const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];for(const v of parsed){const id=crypto.randomUUID();stmts.push(env.DB.prepare(`INSERT INTO volunteers(id,event_id,first_name,last_name,gender,email,phone,family,active,created_at,updated_at,department_id) VALUES(?,?,?,?,?,?,?,?,1,?,?,?)`).bind(id,x.event_id,v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,now,now,x.department_id));for(const role of v.roles)stmts.push(env.DB.prepare(`INSERT INTO volunteer_roles(volunteer_id,role) VALUES(?,?)`).bind(id,role))}
   if(stmts.length)await env.DB.batch(stmts);return json({ok:true,count:parsed.length,department:x.department_name});
 }
@@ -772,9 +788,9 @@ const token=decodeURIComponent(location.pathname.split('/').pop()||''),shortMode
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function call(url,opt){const r=await fetch(url,opt),j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||'Request failed');return j}
 function form(e){app.innerHTML='<div class="confirmation-hero"><div class="eyebrow">Volunteer Entry</div><h1>'+esc(e.name)+'</h1><div class="muted">'+esc(e.start_date)+(e.end_date!==e.start_date?' – '+esc(e.end_date):'')+(e.department_name?' · '+esc(e.department_name):'')+'</div></div><div class="confirmation-body"><div class="entry-tabs"><button id="one-tab" class="primary">Add One</button><button id="bulk-tab" class="secondary">Bulk Add</button></div><div id="entry-body"></div></div>';one();app.querySelector('#one-tab').onclick=one;app.querySelector('#bulk-tab').onclick=bulk}
-function one(){app.querySelector('#one-tab').className='primary';app.querySelector('#bulk-tab').className='secondary';app.querySelector('#entry-body').innerHTML='<form id="one-form" class="entry-form"><div class="date-grid"><label>First Name<input id="fn" required></label><label>Last Name<input id="ln" required></label></div><label>Gender<select id="gender" required><option value="">Select gender</option><option>Male</option><option>Female</option></select></label><div class="date-grid"><label>Email<input id="email" type="email" required></label><label>Phone<input id="phone" type="tel" required></label></div><button class="primary">Add Volunteer</button><div id="msg" class="form-error"></div></form>';app.querySelector('#one-form').onsubmit=saveOne}
+function one(){app.querySelector('#one-tab').className='primary';app.querySelector('#bulk-tab').className='secondary';app.querySelector('#entry-body').innerHTML='<form id="one-form" class="entry-form"><div class="date-grid"><label>First Name<input id="fn" required></label><label>Last Name<input id="ln" required></label></div><label>Gender<select id="gender" required><option value="">Select gender</option><option>Male</option><option>Female</option></select></label><div class="date-grid"><label>Email (optional)<input id="email" type="email"></label><label>Phone (optional)<input id="phone" type="tel"></label></div><button class="primary">Add Volunteer</button><div id="msg" class="form-error"></div></form>';app.querySelector('#one-form').onsubmit=saveOne}
 async function saveOne(ev){ev.preventDefault();const b=ev.submitter;b.disabled=true;b.textContent='Adding…';try{await call(apiBase+encodeURIComponent(token),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({first_name:fn.value,last_name:ln.value,gender:gender.value,email:email.value,phone:phone.value,roles:[]})});ev.target.reset();msg.className='confirmation-saved';msg.textContent='Volunteer added successfully.'}catch(e){msg.className='form-error';msg.textContent=e.message}finally{b.disabled=false;b.textContent='Add Volunteer'}}
-function bulk(){app.querySelector('#one-tab').className='secondary';app.querySelector('#bulk-tab').className='primary';app.querySelector('#entry-body').innerHTML='<form id="bulk-form" class="entry-form"><p class="muted">Paste rows from Excel or Google Sheets: First Name | Last Name | Gender | Email | Phone</p><textarea id="bulk" rows="10" placeholder="John&#9;Smith&#9;Male&#9;john@example.com&#9;2065550101"></textarea><button class="primary">Add Volunteers</button><div id="bmsg" class="form-error"></div></form>';app.querySelector('#bulk-form').onsubmit=saveBulk}
+function bulk(){app.querySelector('#one-tab').className='secondary';app.querySelector('#bulk-tab').className='primary';app.querySelector('#entry-body').innerHTML='<form id="bulk-form" class="entry-form"><p class="muted">Paste rows from Excel or Google Sheets: First Name | Last Name | Gender | Email (optional) | Phone (optional). Blank email and phone are saved.</p><textarea id="bulk" rows="10" placeholder="John&#9;Smith&#9;Male&#9;john@example.com&#9;2065550101"></textarea><button class="primary">Add Volunteers</button><div id="bmsg" class="form-error"></div></form>';app.querySelector('#bulk-form').onsubmit=saveBulk}
 async function saveBulk(ev){ev.preventDefault();const rows=bulk.value.split(/\\r?\\n/).filter(x=>x.trim()).map(line=>{const c=line.includes('\\t')?line.split('\\t'):line.split(',');return{first_name:(c[0]||'').trim(),last_name:(c[1]||'').trim(),gender:(c[2]||'').trim(),email:(c[3]||'').trim(),phone:(c[4]||'').trim(),roles:[]}});if(!rows.length){bmsg.textContent='Paste at least one row.';return}const b=ev.submitter;b.disabled=true;b.textContent='Adding…';try{const r=await call(apiBase+encodeURIComponent(token),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({volunteers:rows})});bulk.value='';bmsg.className='confirmation-saved';bmsg.textContent=r.count+' volunteer(s) added successfully.'}catch(e){bmsg.className='form-error';bmsg.textContent=e.message}finally{b.disabled=false;b.textContent='Add Volunteers'}}
 call(apiBase+encodeURIComponent(token)).then(r=>form(r.event)).catch(e=>app.innerHTML='<div class="confirmation-body"><h2>Unable to open volunteer entry</h2><p>'+esc(e.message)+'</p></div>');
 </script></body></html>`,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer'}});
@@ -992,7 +1008,7 @@ async function listEventPeople(env:Env,eventId:string){
 }
 async function saveEventPerson(req:Request,env:Env,eventId:string,id=''){
  if(!await getEvent(env,eventId))return nf('Event not found');const b=await body(req);if(!b)return bad('Invalid JSON');
- const first=clean(b.first_name),last=clean(b.last_name),email=clean(b.email)||null,phone=clean(b.phone)||null;if(!first||!last)return bad('First and last name are required.');const now=new Date().toISOString();
+ const first=clean(b.first_name),last=clean(b.last_name),emailRaw=clean(b.email),phoneRaw=clean(b.phone);if(!first||!last)return bad('First and last name are required.');const emailError=emailFormatError(emailRaw);if(emailError)return bad(emailError);const phoneError=phoneFormatError(phoneRaw);if(phoneError)return bad(phoneError);const email=emailRaw||null,phone=phoneRaw||null;const now=new Date().toISOString();
  if(id){const r=await env.DB.prepare(`UPDATE event_people SET first_name=?,last_name=?,email=?,phone=?,active=?,updated_at=? WHERE id=? AND event_id=?`).bind(first,last,email,phone,b.active===false?0:1,now,id,eventId).run();if(!r.meta.changes)return nf('Person not found');return json({ok:true,id});}
  id=crypto.randomUUID();await env.DB.prepare(`INSERT INTO event_people(id,event_id,first_name,last_name,email,phone,active,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)`).bind(id,eventId,first,last,email,phone,now,now).run();return json({ok:true,id},201);
 }
@@ -1067,6 +1083,53 @@ async function addLibraryTaskToEvent(req:Request,env:Env,eventId:string,libraryI
 async function createSnapshot(req:Request,env:Env,eventId:string){if(!await getEvent(env,eventId))return nf('Event not found');const b=await body(req)||{},label=clean(b.label)||`Schedule ${new Date().toLocaleDateString('en-US')}`;const [e,v,t,s,a]=await Promise.all([getEvent(env,eventId),env.DB.prepare(`SELECT * FROM volunteers WHERE event_id=? ORDER BY last_name,first_name`).bind(eventId).all(),env.DB.prepare(`SELECT * FROM tasks WHERE event_id=? ORDER BY name`).bind(eventId).all(),env.DB.prepare(`SELECT * FROM slots WHERE event_id=? ORDER BY date,start_time`).bind(eventId).all(),env.DB.prepare(`SELECT * FROM assignments WHERE event_id=?`).bind(eventId).all()]);const id=crypto.randomUUID(),now=new Date().toISOString(),payload=JSON.stringify({event:e,volunteers:v.results,tasks:t.results,slots:s.results,assignments:a.results});await env.DB.prepare(`INSERT INTO schedule_snapshots(id,event_id,label,snapshot_json,created_at) VALUES(?,?,?,?,?)`).bind(id,eventId,label,payload,now).run();return json({ok:true,id,label,created_at:now},201)}
 async function listSnapshots(env:Env,eventId:string){const r=await env.DB.prepare(`SELECT id,label,created_at,length(snapshot_json) bytes FROM schedule_snapshots WHERE event_id=? ORDER BY created_at DESC LIMIT 50`).bind(eventId).all();return json({ok:true,snapshots:r.results})}
 
+async function cleaningDepartment(env:Env,eventId:string,departmentId:string){
+  if(!departmentId)return {ok:false as const,response:bad('Department is required.')};
+  const d=await env.DB.prepare(`SELECT id,name FROM departments WHERE id=? AND event_id=?`).bind(departmentId,eventId).first<{id:string,name:string}>();
+  if(!d)return {ok:false as const,response:nf('Department not found')};
+  if(d.name!=='Cleaning')return {ok:false as const,response:bad('Congregation captains are only available for the Cleaning department.')};
+  return {ok:true as const,id:d.id};
+}
+function parseCaptain(b:Record<string,unknown>){
+  const name=clean(b.name),congregation=clean(b.congregation_name),email=clean(b.email),phone=clean(b.phone);
+  if(!name)return {error:'Name is required'} as const;
+  if(!congregation)return {error:'Congregation name is required'} as const;
+  if(name.length>120||congregation.length>120)return {error:'Name and congregation must be 120 characters or less'} as const;
+  const emailError=emailFormatError(email); if(emailError)return {error:emailError} as const;
+  const phoneError=phoneFormatError(phone); if(phoneError)return {error:phoneError} as const;
+  return {value:{name,congregation,email:email||null,phone:phone||null}} as const;
+}
+async function listCaptains(env:Env,eventId:string,departmentId:string){
+  const gate=await cleaningDepartment(env,eventId,departmentId); if(!gate.ok)return gate.response;
+  const r=await env.DB.prepare(`SELECT id,event_id,department_id,name,email,phone,congregation_name,created_at,updated_at FROM congregation_captains WHERE event_id=? AND department_id=? ORDER BY congregation_name COLLATE NOCASE,name COLLATE NOCASE`).bind(eventId,gate.id).all();
+  return json({ok:true,captains:r.results});
+}
+async function createCaptain(req:Request,env:Env,eventId:string){
+  const b=await body(req); if(!b)return bad('Invalid JSON');
+  const gate=await cleaningDepartment(env,eventId,clean(b.department_id)); if(!gate.ok)return gate.response;
+  const p=parseCaptain(b); if('error'in p)return bad(p.error);
+  const id=crypto.randomUUID(),now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO congregation_captains(id,event_id,department_id,name,email,phone,congregation_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`).bind(id,eventId,gate.id,p.value.name,p.value.email,p.value.phone,p.value.congregation,now,now).run();
+  return json({ok:true,id},201);
+}
+async function patchCaptain(req:Request,env:Env,eventId:string,id:string){
+  const existing=await env.DB.prepare(`SELECT * FROM congregation_captains WHERE id=? AND event_id=?`).bind(id,eventId).first<any>(); if(!existing)return nf('Captain not found');
+  const b=await body(req); if(!b)return bad('Invalid JSON');
+  const gate=await cleaningDepartment(env,eventId,clean(b.department_id)||existing.department_id); if(!gate.ok)return gate.response;
+  if(existing.department_id!==gate.id)return bad('Captain does not belong to this department.');
+  const merged={name:b.name??existing.name,congregation_name:b.congregation_name??existing.congregation_name,email:b.email??existing.email??'',phone:b.phone??existing.phone??'',department_id:gate.id};
+  const p=parseCaptain(merged); if('error'in p)return bad(p.error);
+  await env.DB.prepare(`UPDATE congregation_captains SET name=?,email=?,phone=?,congregation_name=?,updated_at=? WHERE id=? AND event_id=? AND department_id=?`).bind(p.value.name,p.value.email,p.value.phone,p.value.congregation,new Date().toISOString(),id,eventId,gate.id).run();
+  return json({ok:true,id});
+}
+async function deleteCaptain(env:Env,eventId:string,id:string,departmentId:string){
+  const existing=await env.DB.prepare(`SELECT department_id FROM congregation_captains WHERE id=? AND event_id=?`).bind(id,eventId).first<{department_id:string}>(); if(!existing)return nf('Captain not found');
+  const gate=await cleaningDepartment(env,eventId,departmentId||existing.department_id); if(!gate.ok)return gate.response;
+  if(existing.department_id!==gate.id)return bad('Captain does not belong to this department.');
+  await env.DB.prepare(`DELETE FROM congregation_captains WHERE id=? AND event_id=? AND department_id=?`).bind(id,eventId,gate.id).run();
+  return json({ok:true,deleted:id});
+}
+
 function shell(app:AppCode,eventId?:string){
  const title=APP_NAMES[app], pageData=JSON.stringify({app,eventId:eventId||null}).replace(/</g,'\\u003c');
  return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>OurPortal — ${title}</title><link rel="stylesheet" href="/app.css"></head>
@@ -1105,7 +1168,7 @@ export default {async fetch(request,env):Promise<Response>{
    // by the explicit checks below; unknown/new routes remain Event Admin only.
    if(!(await isEventAdmin(env,eid,email))){
     const u2=new URL(request.url),depQ=clean(u2.searchParams.get('department_id'));
-    const readScoped=/\/(volunteers|tasks|slots|schedule|schedule-preflight)$/.test(p)&&request.method==='GET';
+    const readScoped=/\/(volunteers|tasks|slots|schedule|schedule-preflight|captains)$/.test(p)&&request.method==='GET';
     const orgRead=/\/organization$/.test(p)&&request.method==='GET';
     if(readScoped){if(!depQ||!(await canAccessDepartment(env,eid,email,depQ)))return json({ok:false,error:'You do not have permission to access this department.'},403);}
     else if(orgRead){/* organization is required to render the permitted department workspace; UI filtering is applied client-side in this release */}
@@ -1123,6 +1186,12 @@ export default {async fetch(request,env):Promise<Response>{
   const sep=p.match(/^\/api\/e\/([^/]+)$/);
   if(sep&&request.method==='GET')return shortEntryData(env,decodeURIComponent(sep[1]));
   if(sep&&request.method==='POST')return shortEntryAdd(request,env,decodeURIComponent(sep[1]));
+  const caps=p.match(/^\/api\/events\/([^/]+)\/captains$/);
+  if(caps&&request.method==='GET')return listCaptains(env,decodeURIComponent(caps[1]),clean(u.searchParams.get('department_id')));
+  if(caps&&request.method==='POST')return createCaptain(request,env,decodeURIComponent(caps[1]));
+  const capOne=p.match(/^\/api\/events\/([^/]+)\/captains\/([^/]+)$/);
+  if(capOne&&request.method==='PATCH')return patchCaptain(request,env,decodeURIComponent(capOne[1]),decodeURIComponent(capOne[2]));
+  if(capOne&&request.method==='DELETE')return deleteCaptain(env,decodeURIComponent(capOne[1]),decodeURIComponent(capOne[2]),clean(u.searchParams.get('department_id')));
   const vm=p.match(/^\/api\/events\/([^/]+)\/volunteers$/);
   if(vm&&request.method==='GET')return listVolunteers(request,env,decodeURIComponent(vm[1]));
   if(vm&&request.method==='POST')return createVolunteer(request,env,decodeURIComponent(vm[1]));
