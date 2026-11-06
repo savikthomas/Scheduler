@@ -16,6 +16,7 @@ interface Env {
 interface VolunteerRow {
   id:string; event_id:string; first_name:string; last_name:string; gender:'Male'|'Female';
   email:string|null; phone:string|null; family:string|null; active:number; created_at:string; updated_at:string;
+  congregation?:string|null; minor?:number;
   roles?: string[];
 }
 
@@ -203,26 +204,44 @@ async function rolesFor(env:Env,ids:string[]){
   const r=await env.DB.prepare(`SELECT volunteer_id,role FROM volunteer_roles WHERE volunteer_id IN (${marks}) ORDER BY role`).bind(...ids).all<{volunteer_id:string,role:string}>();
   for(const x of r.results)(map[x.volunteer_id]??=[]).push(x.role); return map;
 }
+// Adds the congregation/minor volunteer columns the first time the Worker runs
+// against a database that does not have them yet. Safe to run repeatedly.
+let volunteerColumnsReady:Promise<void>|null=null;
+function ensureVolunteerColumns(env:Env){
+  if(!volunteerColumnsReady)volunteerColumnsReady=(async()=>{
+    const r=await env.DB.prepare(`PRAGMA table_info(volunteers)`).all<{name:string}>();
+    const have=new Set(r.results.map(x=>x.name));
+    if(!have.has('congregation'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN congregation TEXT`).run().catch(()=>{});
+    if(!have.has('minor'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN minor INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
+  })().catch(e=>{volunteerColumnsReady=null;throw e});
+  return volunteerColumnsReady;
+}
+async function eventCongregations(env:Env,eventId:string){
+  const r=await env.DB.prepare(`SELECT name FROM (SELECT TRIM(congregation) name FROM volunteers WHERE event_id=? UNION SELECT TRIM(congregation_name) name FROM congregation_captains WHERE event_id=?) WHERE name IS NOT NULL AND name<>'' ORDER BY name COLLATE NOCASE`).bind(eventId,eventId).all<{name:string}>();
+  return r.results.map(x=>x.name);
+}
 async function listVolunteers(req:Request,env:Env,eventId:string){
   const e=await getEvent(env,eventId); if(!e)return nf('Event not found');
   const u=new URL(req.url),q=clean(u.searchParams.get('q')),departmentId=clean(u.searchParams.get('department_id'));
   const like=`%${q}%`;
   const where=departmentId?'event_id=? AND department_id=?':'event_id=?', base=departmentId?[eventId,departmentId]:[eventId];
   const r=q
-    ? await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR family LIKE ?) ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base,like,like,like,like,like).all<VolunteerRow>()
+    ? await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR family LIKE ? OR congregation LIKE ?) ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base,like,like,like,like,like,like).all<VolunteerRow>()
     : await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base).all<VolunteerRow>();
   const rm=await rolesFor(env,r.results.map(x=>x.id));
-  return json({ok:true,volunteers:r.results.map(x=>({...x,roles:rm[x.id]||[]}))});
+  return json({ok:true,volunteers:r.results.map(x=>({...x,minor:Number(x.minor||0),roles:rm[x.id]||[]})),congregations:await eventCongregations(env,eventId)});
 }
 function parseVolunteer(b:Record<string,unknown>){
   const first=clean(b.first_name),last=clean(b.last_name),gender=clean(b.gender),email=clean(b.email),phone=clean(b.phone),family=last;
   const active=b.active===false||b.active===0?0:1;
+  const congregation=clean(b.congregation),minor=b.minor===true||b.minor===1||b.minor==='1'||b.minor==='true'?1:0;
+  if(congregation.length>80)return {error:'Congregation name is too long'} as const;
   const roles=Array.isArray(b.roles)?[...new Set(b.roles.map(clean).filter(x=>ROLES.includes(x as Role)))]:[];
   if(!first||!last)return {error:'First and last name are required'} as const;
   if(gender!=='Male'&&gender!=='Female')return {error:'Gender must be Male or Female'} as const;
   const emailError=emailFormatError(email); if(emailError)return {error:emailError} as const;
   const phoneError=phoneFormatError(phone); if(phoneError)return {error:phoneError} as const;
-  return {value:{first,last,gender,email,phone,family,active,roles}} as const;
+  return {value:{first,last,gender,email,phone,family,active,roles,congregation,minor}} as const;
 }
 async function createVolunteer(req:Request,env:Env,eventId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
@@ -230,7 +249,7 @@ async function createVolunteer(req:Request,env:Env,eventId:string){
   const v=p.value,id=crypto.randomUUID(),now=new Date().toISOString();
   const dep=clean(b.department_id)||(await env.DB.prepare(`SELECT id FROM departments WHERE event_id=? AND active=1 ORDER BY sort_order,id LIMIT 1`).bind(eventId).first<{id:string}>())?.id||'';
   if(!dep)return bad('Create a department first');
-  const stmts=[env.DB.prepare(`INSERT INTO volunteers(id,event_id,first_name,last_name,gender,email,phone,family,active,created_at,updated_at,department_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,eventId,v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,v.active,now,now,dep),
+  const stmts=[env.DB.prepare(`INSERT INTO volunteers(id,event_id,first_name,last_name,gender,email,phone,family,active,created_at,updated_at,department_id,congregation,minor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,eventId,v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,v.active,now,now,dep,v.congregation||null,v.minor),
     ...v.roles.map(r=>env.DB.prepare(`INSERT INTO volunteer_roles(volunteer_id,role) VALUES(?,?)`).bind(id,r))];
   await env.DB.batch(stmts); return json({ok:true,id},201);
 }
@@ -238,9 +257,9 @@ async function patchVolunteer(req:Request,env:Env,eventId:string,id:string){
   const existing=await env.DB.prepare(`SELECT * FROM volunteers WHERE id=? AND event_id=?`).bind(id,eventId).first<VolunteerRow>(); if(!existing)return nf('Volunteer not found');
   const b=await body(req); if(!b)return bad('Invalid JSON');
   const oldRoles=(await rolesFor(env,[id]))[id]||[];
-  const merged={first_name:b.first_name??existing.first_name,last_name:b.last_name??existing.last_name,gender:b.gender??existing.gender,email:b.email??existing.email??'',phone:b.phone??existing.phone??'',family:b.family??existing.family??'',active:b.active??existing.active,roles:b.roles??oldRoles};
+  const merged={first_name:b.first_name??existing.first_name,last_name:b.last_name??existing.last_name,gender:b.gender??existing.gender,email:b.email??existing.email??'',phone:b.phone??existing.phone??'',family:b.family??existing.family??'',active:b.active??existing.active,roles:b.roles??oldRoles,congregation:b.congregation??existing.congregation??'',minor:b.minor??existing.minor??0};
   const p=parseVolunteer(merged); if('error'in p)return bad(p.error); const v=p.value;
-  const stmts=[env.DB.prepare(`UPDATE volunteers SET first_name=?,last_name=?,gender=?,email=?,phone=?,family=?,active=?,updated_at=? WHERE id=? AND event_id=?`).bind(v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,v.active,new Date().toISOString(),id,eventId),
+  const stmts=[env.DB.prepare(`UPDATE volunteers SET first_name=?,last_name=?,gender=?,email=?,phone=?,family=?,active=?,congregation=?,minor=?,updated_at=? WHERE id=? AND event_id=?`).bind(v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,v.active,v.congregation||null,v.minor,new Date().toISOString(),id,eventId),
     env.DB.prepare(`DELETE FROM volunteer_roles WHERE volunteer_id=?`).bind(id),
     ...v.roles.map(r=>env.DB.prepare(`INSERT INTO volunteer_roles(volunteer_id,role) VALUES(?,?)`).bind(id,r))];
   await env.DB.batch(stmts); return json({ok:true});
@@ -259,11 +278,12 @@ async function importVolunteers(req:Request,env:Env,eventId:string){
   const b=await body(req); if(!b||!Array.isArray(b.volunteers))return bad('volunteers[] is required');
   if(b.volunteers.length>500)return bad('Maximum 500 volunteers per batch');
   const parsed:any[]=[]; const errors:any[]=[];
-  b.volunteers.forEach((x,i)=>{if(!x||typeof x!=='object'){errors.push({row:i+1,error:'Invalid row'});return}const p=parseVolunteer(x as any);if('error'in p)errors.push({row:i+1,error:p.error});else parsed.push({row:i+1,...p.value})});
+  const defaultCongregation=clean(b.congregation);
+  b.volunteers.forEach((x,i)=>{if(!x||typeof x!=='object'){errors.push({row:i+1,error:'Invalid row'});return}const row={...(x as any)};if(defaultCongregation&&!clean(row.congregation))row.congregation=defaultCongregation;const p=parseVolunteer(row);if('error'in p)errors.push({row:i+1,error:p.error});else parsed.push({row:i+1,...p.value})});
   if(errors.length)return json({ok:false,error:'Import validation failed',errors},400);
   const departmentId=clean(b.department_id)||(await env.DB.prepare(`SELECT id FROM departments WHERE event_id=? AND active=1 ORDER BY sort_order,id LIMIT 1`).bind(eventId).first<{id:string}>())?.id||'';if(!departmentId)return bad('Create a department first');
   const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];
-  for(const v of parsed){const id=crypto.randomUUID();stmts.push(env.DB.prepare(`INSERT INTO volunteers(id,event_id,first_name,last_name,gender,email,phone,family,active,created_at,updated_at,department_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,eventId,v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,v.active,now,now,departmentId)); for(const r of v.roles)stmts.push(env.DB.prepare(`INSERT INTO volunteer_roles(volunteer_id,role) VALUES(?,?)`).bind(id,r))}
+  for(const v of parsed){const id=crypto.randomUUID();stmts.push(env.DB.prepare(`INSERT INTO volunteers(id,event_id,first_name,last_name,gender,email,phone,family,active,created_at,updated_at,department_id,congregation,minor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,eventId,v.first,v.last,v.gender,v.email||null,v.phone||null,v.family||null,v.active,now,now,departmentId,v.congregation||null,v.minor)); for(const r of v.roles)stmts.push(env.DB.prepare(`INSERT INTO volunteer_roles(volunteer_id,role) VALUES(?,?)`).bind(id,r))}
   if(stmts.length)await env.DB.batch(stmts); return json({ok:true,imported:parsed.length});
 }
 
@@ -454,7 +474,7 @@ async function saveVolunteerAvailability(req:Request,env:Env,eventId:string,volu
   return json({ok:true,mode:ids.length?'selected':'all',slot_ids:ids});
 }
 
-type SchedVolunteer={id:string,first_name:string,last_name:string,gender:string,family:string|null,created_at:string,department_id:string|null,assistant_area_id:string|null,roles:string[]};
+type SchedVolunteer={id:string,first_name:string,last_name:string,gender:string,family:string|null,created_at:string,department_id:string|null,assistant_area_id:string|null,minor:number,roles:string[]};
 type SchedSlot={id:string,event_id:string,task_id:string,date:string,start_time:string,end_time:string|null,positions_needed:number,task_name:string,auto_schedule:number,department_id:string|null,assistant_area_id:string|null,eligibility:string[]};
 type SchedAssignment={id:string,event_id:string,slot_id:string,volunteer_id:string,locked:number,published:number,created_at:string,date?:string,start_time?:string,end_time?:string|null,task_name?:string};
 
@@ -483,8 +503,24 @@ function anyoneCompatible(v:SchedVolunteer,slot:SchedSlot,assigned:{volunteer_id
   if(!(slot.eligibility.length===1&&slot.eligibility[0]==='Anyone'))return true;
   return peers.every(p=>p.gender===v.gender || (!!p.family&&!!v.family&&p.family.toLowerCase()===v.family.toLowerCase()));
 }
+// Minor rule: a minor may only serve in a slot that also has a non-minor from the
+// same family and of the same gender. One such adult can cover several minors.
+const famKey=(v:{family:string|null})=>(v.family||'').trim().toLowerCase();
+function hasAdultRelative(minor:SchedVolunteer,slotId:string,assigned:{volunteer_id:string,slot_id:string}[],vm:Map<string,SchedVolunteer>){
+  const fam=famKey(minor);if(!fam)return false;
+  return assigned.some(a=>{if(a.slot_id!==slotId||a.volunteer_id===minor.id)return false;const p=vm.get(a.volunteer_id);return !!p&&!Number(p.minor)&&p.gender===minor.gender&&famKey(p)===fam});
+}
+function minorOk(v:SchedVolunteer,slotId:string,assigned:{volunteer_id:string,slot_id:string}[],vm:Map<string,SchedVolunteer>){
+  return !Number(v.minor)||hasAdultRelative(v,slotId,assigned,vm);
+}
+// Returns the first minor in the slot who is not covered by an adult relative.
+function uncoveredMinor(slotId:string,assigned:{volunteer_id:string,slot_id:string}[],vm:Map<string,SchedVolunteer>){
+  for(const a of assigned){if(a.slot_id!==slotId)continue;const v=vm.get(a.volunteer_id);if(v&&Number(v.minor)&&!hasAdultRelative(v,slotId,assigned,vm))return v;}
+  return null;
+}
+const MINOR_RULE_TEXT='A minor can only be scheduled in a shift that also has an adult family member of the same gender.';
 async function schedulingData(env:Env,eventId:string,departmentId=''){
-  const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
+  const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id,COALESCE(minor,0) minor FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
   const rr=await env.DB.prepare(`SELECT volunteer_id,role FROM volunteer_roles WHERE volunteer_id IN (SELECT id FROM volunteers WHERE event_id=? AND active=1)`).bind(eventId).all<any>();
   const roleMap:Record<string,string[]>={};for(const r of rr.results)(roleMap[r.volunteer_id]??=[]).push(r.role);
   const volunteers:SchedVolunteer[]=vr.results.filter((v:any)=>!departmentId||v.department_id===departmentId).map((v:any)=>({...v,roles:roleMap[v.id]||[]}));
@@ -528,6 +564,9 @@ async function removeScheduleAssignments(req:Request,env:Env,eventId:string){
   const marks=ids.map(()=>'?').join(',');
   const rows=await env.DB.prepare(`SELECT id,slot_id,volunteer_id FROM assignments WHERE event_id=? AND id IN (${marks})`).bind(eventId,...ids).all<any>();
   if(rows.results.length!==ids.length)return bad('One or more selected assignments were not found.');
+  {const d=await schedulingData(env,eventId),vm=new Map(d.volunteers.map(v=>[v.id,v])),removing=new Set(ids);
+   const remaining=d.assignments.filter(a=>!removing.has(a.id));
+   for(const slotId of new Set(rows.results.map((a:any)=>a.slot_id as string))){const orphan=uncoveredMinor(slotId,remaining,vm);if(orphan)return bad(`Removing this would leave ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in that shift. Select the minor's assignment too, or change it first.`)}}
   const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];
   for(const a of rows.results){
     stmts.push(env.DB.prepare(`INSERT OR REPLACE INTO schedule_exclusions(event_id,slot_id,volunteer_id,reason,created_at) VALUES(?,?,?,?,?)`).bind(eventId,a.slot_id,a.volunteer_id,'Removed from schedule',now));
@@ -547,6 +586,8 @@ async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,
   const assigned=d.assignments.filter(a=>a.id!==ignoreAssignmentId).map(a=>{const x=sm.get(a.slot_id);return x?{id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name}:null}).filter(Boolean) as any[];
   if(!anyoneCompatible(v,s,assigned,vm))return {error:s.eligibility.includes('Family Only')?'Family Only requires everyone in this slot to have the same family.':'For an Anyone task, volunteers in the same slot must be the same gender or have the same family.'};
   if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return {error:'This volunteer already has an overlapping assignment.'};
+  const after=[...assigned,{slot_id:s.id,volunteer_id:v.id}],orphan=uncoveredMinor(s.id,after,vm);
+  if(orphan)return {error:orphan.id===v.id?`${v.first_name} ${v.last_name} is a minor. ${MINOR_RULE_TEXT}`:`This change would leave ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in this shift.`};
   return {ok:true};
 }
 async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assignmentId:string){
@@ -580,6 +621,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
         if(d.avail[v.id]&&!d.avail[v.id].has(s.id))return false;
         if(d.excluded.has(`${v.id}|${s.id}`))return false;
         if(!anyoneCompatible(v,s,assigned,vm))return false;
+        if(!minorOk(v,s.id,assigned,vm))return false;
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
         return true;
       }).sort((a,b)=>(total[a.id]-total[b.id])||((taskCount[a.id][s.task_id]||0)-(taskCount[b.id][s.task_id]||0))||(Math.random()-.5));
@@ -623,6 +665,7 @@ async function rebalanceWithNewVolunteers(env:Env,eventId:string){
         const others=assigned.filter(x=>x.id!==a.id);
         if(!anyoneCompatible(nv,s,others,vm))continue;
         if(others.some(x=>x.volunteer_id===nv.id&&slotOverlaps(s,x)))continue;
+        if(uncoveredMinor(s.id,[...others,{slot_id:s.id,volunteer_id:nv.id}],vm))continue;
         const old=a.volunteer_id;
         a.volunteer_id=nv.id;
         counts[old]--;counts[nv.id]++;
@@ -702,6 +745,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
         if(d.avail[v.id]&&!d.avail[v.id].has(s.id))return false;
         if(d.excluded.has(`${v.id}|${s.id}`))return false;
         if(!anyoneCompatible(v,s,assigned,vm))return false;
+        if(!minorOk(v,s.id,assigned,vm))return false;
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
         return true;
       });
@@ -735,7 +779,8 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
   const statements:D1PreparedStatement[]=[departmentId?env.DB.prepare(`DELETE FROM assignments WHERE event_id=? AND locked=0 AND slot_id IN (SELECT s.id FROM slots s JOIN tasks t ON t.id=s.task_id WHERE s.event_id=? AND t.department_id=?)`).bind(eventId,eventId,departmentId):env.DB.prepare(`DELETE FROM assignments WHERE event_id=? AND locked=0`).bind(eventId)];
   for(const r of rows)statements.push(env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(...r));
   await env.DB.batch(statements);
-  return json({ok:true,created:rows.length,unfilled});
+  const uncovered=new Set<string>();for(const s of d.slots){const m=uncoveredMinor(s.id,assigned,vm);if(m)uncovered.add(`${m.first_name} ${m.last_name}`)}
+  return json({ok:true,created:rows.length,unfilled,warning:uncovered.size?`Locked assignment(s) for ${[...uncovered].join(', ')} (minor) do not have an adult family member of the same gender in the shift. Please review them.`:''});
 }
 
 async function setEntryLink(req:Request,env:Env,eventId:string){
@@ -1147,6 +1192,7 @@ export default {async fetch(request,env):Promise<Response>{
  }
  try{
   const email=accessEmail(request);
+  if(p.startsWith('/api/'))await ensureVolunteerColumns(env);
   if(p==='/api/me'&&request.method==='GET')return json({ok:true,email,full_admin:await isFullAdmin(env,email)});
   if(p==='/')return Response.redirect(new URL('/ca',request.url).toString(),302);
   if(/^\/confirm\/[^/]+$/.test(p))return confirmationShell();

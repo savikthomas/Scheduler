@@ -385,3 +385,25 @@ dialog>.dialog-head{padding:22px 22px 0}
   .schedule-view-tabs{display:flex;overflow-x:auto}
   .schedule-view-tab{white-space:nowrap}
 }
+
+/* Volunteer dialog: congregation, gender toggle, minor, keep-open saving */
+.volunteer-dialog{width:min(660px,calc(100% - 28px))}
+.sticky-defaults{padding:14px;margin-bottom:15px;border:1px solid #d9e7df;background:#f2f8f5;border-radius:12px}
+.sticky-defaults .two{margin:0}
+.sticky-note{font-size:.84rem;color:#41604f;margin-bottom:10px}
+.field-group{display:grid;gap:6px;align-content:start}
+.field-label{font-size:.87rem;font-weight:700;color:#405048}
+.segmented{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:#fff;border:1px solid var(--line-strong);border-radius:10px}
+.segmented label{display:block;cursor:pointer}
+.segmented input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.segmented span{display:block;text-align:center;padding:7px 10px;border-radius:7px;font-weight:750;color:#53615a}
+.segmented label:hover span{background:#f1f5f3}
+.segmented input:checked+span{background:var(--accent);color:#fff}
+.segmented input:focus-visible+span{outline:2px solid #6ba58a;outline-offset:1px}
+.cong-new{margin-top:6px}
+.family-hint{margin:-8px 0 14px;font-size:.8rem}
+.check-row{display:flex;flex-wrap:wrap;gap:8px 22px;margin-bottom:6px}
+.saved-line{margin-top:10px;padding:10px 12px;border-radius:9px;background:var(--accent-soft);color:var(--accent);font-weight:700;font-size:.9rem}
+.minor-pill{background:#fbf3df;color:#8a6510}
+.bulk-cong{margin-bottom:12px}
+@media(max-width:650px){.sticky-defaults .two{gap:12px}}
