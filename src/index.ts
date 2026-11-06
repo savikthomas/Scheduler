@@ -176,7 +176,7 @@ async function createEvent(req:Request,env:Env){
   if(!isApp(app)||!name||!validDate(sd)||!validDate(ed)||ed<sd||!['Simple','Full'].includes(structure))return bad('Check event name, dates, and structure');
   if(departmentName.length>80)return bad('Department name is too long.');
   const id=crypto.randomUUID(),now=new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO events(id,app,name,start_date,end_date,status,entry_enabled,structure_mode,department_name,created_at,updated_at) VALUES(?,?,?,?,?,'Active',0,?,?,?,?,?)`).bind(id,app,name,sd,ed,structure,departmentName,now,now).run();
+  await env.DB.prepare(`INSERT INTO events(id,app,name,start_date,end_date,status,entry_enabled,structure_mode,department_name,created_at,updated_at) VALUES(?,?,?,?,?,'Active',0,?,?,?,?)`).bind(id,app,name,sd,ed,structure,departmentName,now,now).run();
   if(departmentName)await ensureDepartmentNamed(env,id,departmentName);
   if(structure==='Full')await ensureFullCommitteePositions(env,id);
   return json({ok:true,event:await getEvent(env,id)},201);
