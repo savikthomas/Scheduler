@@ -407,3 +407,5 @@ dialog>.dialog-head{padding:22px 22px 0}
 .minor-pill{background:#fbf3df;color:#8a6510}
 .bulk-cong{margin-bottom:12px}
 @media(max-width:650px){.sticky-defaults .two{gap:12px}}
+.minor-col{text-align:center;width:64px}
+.minor-toggle{width:18px;height:18px;cursor:pointer;accent-color:var(--accent)}
