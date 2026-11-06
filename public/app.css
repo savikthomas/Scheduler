@@ -409,3 +409,7 @@ dialog>.dialog-head{padding:22px 22px 0}
 @media(max-width:650px){.sticky-defaults .two{gap:12px}}
 .minor-col{text-align:center;width:64px}
 .minor-toggle{width:18px;height:18px;cursor:pointer;accent-color:var(--accent)}
+.cong-inline{width:auto;min-width:130px;max-width:190px;padding:5px 8px;font-size:.88rem;border-color:transparent;background:transparent}
+.cong-inline:hover,.cong-inline:focus{border-color:var(--line-strong);background:#fff}
+.cong-new-inline{display:flex;gap:6px;align-items:center}
+.cong-new-inline input{width:140px;padding:5px 8px;font-size:.88rem}
