@@ -213,6 +213,8 @@ function ensureVolunteerColumns(env:Env){
     const have=new Set(r.results.map(x=>x.name));
     if(!have.has('congregation'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN congregation TEXT`).run().catch(()=>{});
     if(!have.has('minor'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN minor INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
+    const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();
+    if(!sr.results.some(x=>x.name==='locked'))await env.DB.prepare(`ALTER TABLE slots ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
   })().catch(e=>{volunteerColumnsReady=null;throw e});
   return volunteerColumnsReady;
 }
@@ -531,7 +533,7 @@ async function schedulingData(env:Env,eventId:string,departmentId=''){
   const rr=await env.DB.prepare(`SELECT volunteer_id,role FROM volunteer_roles WHERE volunteer_id IN (SELECT id FROM volunteers WHERE event_id=? AND active=1)`).bind(eventId).all<any>();
   const roleMap:Record<string,string[]>={};for(const r of rr.results)(roleMap[r.volunteer_id]??=[]).push(r.role);
   const volunteers:SchedVolunteer[]=vr.results.filter((v:any)=>!departmentId||v.department_id===departmentId).map((v:any)=>({...v,roles:roleMap[v.id]||[]}));
-  const sr=await env.DB.prepare(`SELECT s.id,s.event_id,s.task_id,s.date,s.start_time,s.end_time,s.positions_needed,t.name task_name,t.auto_schedule,t.department_id,t.assistant_area_id FROM slots s JOIN tasks t ON t.id=s.task_id WHERE s.event_id=? AND t.active=1 ORDER BY s.date,s.start_time,t.name`).bind(eventId).all<any>();
+  const sr=await env.DB.prepare(`SELECT s.id,s.event_id,s.task_id,s.date,s.start_time,s.end_time,s.positions_needed,COALESCE(s.locked,0) locked,t.name task_name,t.auto_schedule,t.department_id,t.assistant_area_id FROM slots s JOIN tasks t ON t.id=s.task_id WHERE s.event_id=? AND t.active=1 ORDER BY s.date,s.start_time,t.name`).bind(eventId).all<any>();
   const er=await env.DB.prepare(`SELECT task_id,value FROM task_eligibility WHERE task_id IN (SELECT id FROM tasks WHERE event_id=?)`).bind(eventId).all<any>();
   const em:Record<string,string[]>={};for(const e of er.results)(em[e.task_id]??=[]).push(e.value);
   const slots:SchedSlot[]=sr.results.filter((s:any)=>!departmentId||s.department_id===departmentId).map((s:any)=>({...s,positions_needed:Number(s.positions_needed||1),eligibility:em[s.task_id]||[]}));
@@ -562,6 +564,19 @@ async function setOneAssignmentLock(env:Env,eventId:string,assignmentId:string,l
   const a=await env.DB.prepare(`SELECT id FROM assignments WHERE id=? AND event_id=?`).bind(assignmentId,eventId).first();
   if(!a)return nf('Assignment not found');
   await env.DB.prepare(`UPDATE assignments SET locked=?,updated_at=? WHERE id=? AND event_id=?`).bind(locked?1:0,new Date().toISOString(),assignmentId,eventId).run();
+  if(!locked)await env.DB.prepare(`UPDATE slots SET locked=0 WHERE id=(SELECT slot_id FROM assignments WHERE id=?) AND event_id=?`).bind(assignmentId,eventId).run();
+  return json({ok:true,locked});
+}
+// Locks one time slot: its current people are locked, and Generate / Fill Open /
+// Rebalance leave the slot exactly as it is (no additions, no removals).
+async function setSlotLock(env:Env,eventId:string,slotId:string,locked:boolean){
+  const s=await env.DB.prepare(`SELECT id FROM slots WHERE id=? AND event_id=?`).bind(slotId,eventId).first();
+  if(!s)return nf('Time slot not found');
+  const now=new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE slots SET locked=?,updated_at=? WHERE id=? AND event_id=?`).bind(locked?1:0,now,slotId,eventId),
+    env.DB.prepare(`UPDATE assignments SET locked=?,updated_at=? WHERE slot_id=? AND event_id=?`).bind(locked?1:0,now,slotId,eventId)
+  ]);
   return json({ok:true,locked});
 }
 async function removeScheduleAssignments(req:Request,env:Env,eventId:string){
@@ -573,7 +588,7 @@ async function removeScheduleAssignments(req:Request,env:Env,eventId:string){
   if(rows.results.length!==ids.length)return bad('One or more selected assignments were not found.');
   {const d=await schedulingData(env,eventId),vm=new Map(d.volunteers.map(v=>[v.id,v])),removing=new Set(ids);
    const remaining=d.assignments.filter(a=>!removing.has(a.id));
-   for(const slotId of new Set(rows.results.map((a:any)=>a.slot_id as string))){const orphan=uncoveredMinor(slotId,remaining,vm);if(orphan)return bad(`Removing this would leave ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in that shift. Select the minor's assignment too, or change it first.`)}}
+   if(b.force!==true)for(const slotId of new Set(rows.results.map((a:any)=>a.slot_id as string))){const orphan=uncoveredMinor(slotId,remaining,vm);if(orphan)return json({ok:false,needs_confirm:true,warning:`Removing this leaves ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in that shift.`})}}
   const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];
   for(const a of rows.results){
     stmts.push(env.DB.prepare(`INSERT OR REPLACE INTO schedule_exclusions(event_id,slot_id,volunteer_id,reason,created_at) VALUES(?,?,?,?,?)`).bind(eventId,a.slot_id,a.volunteer_id,'Removed from schedule',now));
@@ -612,23 +627,28 @@ function noteUnfilled(map:Map<string,UnfilledInfo>,s:SchedSlot,d:any,assigned:an
 }
 const unfilledList=(m:Map<string,UnfilledInfo>)=>[...m.values()].sort((a,b)=>a.date.localeCompare(b.date)||a.start_time.localeCompare(b.start_time)||a.task_name.localeCompare(b.task_name));
 async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,volunteerId:string,ignoreAssignmentId=''){
+  // Manual changes may break the scheduling rules, but every rule that would be
+  // broken is listed so the admin can confirm with "Assign Anyway".
   const d=await schedulingData(env,eventId),s=d.slots.find(x=>x.id===slotId),v=d.volunteers.find(x=>x.id===volunteerId);
   if(!s||!v)return {error:'Volunteer or time slot was not found.'};
-  if(!allowsEligibility(v,s.eligibility))return {error:'This volunteer does not meet the task eligibility requirements.'};
-  if(s.department_id&&v.department_id!==s.department_id)return {error:'This volunteer belongs to a different department.'};
-  if(s.assistant_area_id&&v.assistant_area_id!==s.assistant_area_id)return {error:'This volunteer belongs to a different Assistant area.'};
-  if(d.avail[v.id]&&!d.avail[v.id].has(s.id))return {error:'This volunteer is not available for this time slot.'};
+  const who=`${v.first_name} ${v.last_name}`,issues:string[]=[];
+  if(!allowsEligibility(v,s.eligibility))issues.push(`${who} does not meet this task's requirements (${s.eligibility.join(', ')}).`);
+  if(s.department_id&&v.department_id!==s.department_id)issues.push(`${who} belongs to a different department.`);
+  if(s.assistant_area_id&&v.assistant_area_id!==s.assistant_area_id)issues.push(`${who} belongs to a different Assistant area.`);
+  if(d.avail[v.id]&&!d.avail[v.id].has(s.id))issues.push(`${who} did not mark this time as available.`);
   const sm=new Map(d.slots.map(x=>[x.id,x])),vm=new Map(d.volunteers.map(x=>[x.id,x]));
   const assigned=d.assignments.filter(a=>a.id!==ignoreAssignmentId).map(a=>{const x=sm.get(a.slot_id);return x?{id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name}:null}).filter(Boolean) as any[];
-  if(!anyoneCompatible(v,s,assigned,vm))return {error:s.eligibility.includes('Family Only')?'Family Only requires everyone in this slot to have the same family.':'For an Anyone task, volunteers in the same slot must be the same gender or have the same family.'};
+  if(!anyoneCompatible(v,s,assigned,vm))issues.push(s.eligibility.includes('Family Only')?'This is a Family Only slot and the others in it are from a different family.':'Others in this slot are a different gender and not from the same family.');
   const clash=assigned.filter(a=>a.volunteer_id===v.id&&slotOverlaps(s,a));
-  if(clash.length)return {error:`${v.first_name} ${v.last_name} is already scheduled at this time: ${clash.map(slotLabel).join('; ')}. Remove or change that assignment first.`};
+  if(clash.length)issues.push(`${who} is already scheduled at this time: ${clash.map(slotLabel).join('; ')}.`);
+  else{
+    const [ns,ne]=effectiveRange(s,d.slots);
+    const near=assigned.filter(a=>{if(a.volunteer_id!==v.id||a.date!==s.date||a.slot_id===s.id)return false;const o=sm.get(a.slot_id);if(!o)return false;const [os,oe]=effectiveRange(o,d.slots);return ns<oe&&os<ne});
+    if(near.length)issues.push(`${who} is already scheduled close to this time: ${near.map(slotLabel).join('; ')}. One of these shifts has no end time, so they may overlap.`);
+  }
   const after=[...assigned,{slot_id:s.id,volunteer_id:v.id}],orphan=uncoveredMinor(s.id,after,vm);
-  if(orphan)return {error:orphan.id===v.id?`${v.first_name} ${v.last_name} is a minor. ${MINOR_RULE_TEXT}`:`This change would leave ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in this shift.`};
-  const [ns,ne]=effectiveRange(s,d.slots);
-  const near=assigned.filter(a=>{if(a.volunteer_id!==v.id||a.date!==s.date||a.slot_id===s.id)return false;const o=sm.get(a.slot_id);if(!o)return false;const [os,oe]=effectiveRange(o,d.slots);return ns<oe&&os<ne});
-  if(near.length)return {ok:true,warning:`${v.first_name} ${v.last_name} is already scheduled close to this time: ${near.map(slotLabel).join('; ')}. One of these shifts has no end time, so they may overlap.`};
-  return {ok:true};
+  if(orphan)issues.push(orphan.id===v.id?`${who} is a minor. ${MINOR_RULE_TEXT}`:`This leaves ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in this shift.`);
+  return issues.length?{ok:true,warning:issues.join('\n'),issues}:{ok:true};
 }
 async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assignmentId:string){
   const a=await env.DB.prepare(`SELECT id,slot_id FROM assignments WHERE id=? AND event_id=?`).bind(assignmentId,eventId).first<{id:string,slot_id:string}>();
@@ -652,7 +672,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
   for(const a of assigned){const s=sm.get(a.slot_id);if(s&&total[a.volunteer_id]!==undefined){total[a.volunteer_id]++;taskCount[a.volunteer_id][s.task_id]=(taskCount[a.volunteer_id][s.task_id]||0)+1}}
   const rows:any[][]=[];let unfilled=0;const unfilledSlots=new Map<string,UnfilledInfo>();
   for(const s of d.slots){
-    if(!Number(s.auto_schedule))continue;
+    if(!Number(s.auto_schedule)||Number((s as any).locked))continue;
     const need=Math.max(0,s.positions_needed-assigned.filter(a=>a.slot_id===s.id).length);
     for(let p=0;p<need;p++){
       const candidates=d.volunteers.filter(v=>{
@@ -700,7 +720,7 @@ async function rebalanceWithNewVolunteers(env:Env,eventId:string){
         .filter(a=>a.volunteer_id!==nv.id && (counts[a.volunteer_id]||0)>counts[nv.id]+1)
         .sort((a,b)=>(counts[b.volunteer_id]-counts[a.volunteer_id])||String(a.date).localeCompare(String(b.date))||String(a.start_time).localeCompare(String(b.start_time)));
       for(const a of donorAssignments){
-        const s=sm.get(a.slot_id);if(!s)continue;
+        const s=sm.get(a.slot_id);if(!s||Number((s as any).locked))continue;
         if(!allowsEligibility(nv,s.eligibility))continue;
         if(!autoSchedulable(nv,s))continue;
         if(d.avail[nv.id]&&!d.avail[nv.id].has(s.id))continue;
@@ -737,7 +757,7 @@ async function schedulePreflight(req:Request,env:Env,eventId:string){
 async function listSchedule(req:Request,env:Env,eventId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
   const r=await env.DB.prepare(`
-   SELECT a.id,a.slot_id,a.volunteer_id,a.locked,a.published,a.created_at,
+   SELECT a.id,a.slot_id,a.volunteer_id,a.locked,a.published,a.created_at,COALESCE(s.locked,0) slot_locked,
           v.first_name,v.last_name,v.gender,s.date,s.start_time,s.end_time,t.name task_name
    FROM assignments a JOIN volunteers v ON v.id=a.volunteer_id
    JOIN slots s ON s.id=a.slot_id JOIN tasks t ON t.id=s.task_id
@@ -778,7 +798,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
 
   const rows:any[][]=[];let unfilled=0;const unfilledSlots=new Map<string,UnfilledInfo>();
   for(const s of d.slots){
-    if(!Number(s.auto_schedule))continue;
+    if(!Number(s.auto_schedule)||Number((s as any).locked))continue;
     const already=assigned.filter(a=>a.slot_id===s.id).length,need=Math.max(0,s.positions_needed-already);
     for(let p=0;p<need;p++){
       const candidates=d.volunteers.filter(v=>{
@@ -1315,6 +1335,8 @@ export default {async fetch(request,env):Promise<Response>{
   if(sls&&request.method==='PUT'){const b=await body(request);return setEntireScheduleLock(env,decodeURIComponent(sls[1]),!!b?.locked)}
   const sal=p.match(/^\/api\/events\/([^/]+)\/schedule\/assignments\/([^/]+)\/lock$/);
   if(sal&&request.method==='PUT'){const b=await body(request);return setOneAssignmentLock(env,decodeURIComponent(sal[1]),decodeURIComponent(sal[2]),!!b?.locked)}
+  const ssl=p.match(/^\/api\/events\/([^/]+)\/schedule\/slots\/([^/]+)\/lock$/);
+  if(ssl&&request.method==='PUT'){const b=await body(request);return setSlotLock(env,decodeURIComponent(ssl[1]),decodeURIComponent(ssl[2]),!!b?.locked)}
   const sac=p.match(/^\/api\/events\/([^/]+)\/schedule\/assignments\/([^/]+)\/volunteer$/);
   if(sac&&request.method==='PUT')return changeAssignmentVolunteer(request,env,decodeURIComponent(sac[1]),decodeURIComponent(sac[2]));
   const srm=p.match(/^\/api\/events\/([^/]+)\/schedule\/remove$/);

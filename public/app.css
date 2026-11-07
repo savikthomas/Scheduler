@@ -416,3 +416,7 @@ dialog>.dialog-head{padding:22px 22px 0}
 .email-cell{max-width:220px;overflow-wrap:anywhere}
 .phone-cell{white-space:nowrap}
 #notice-text{white-space:pre-line;max-height:55vh;overflow:auto;text-align:left}
+.card-head-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.schedule-card.slot-locked{border-color:#9fcbb5;box-shadow:0 0 0 1px #cfe5d9}
+.schedule-card.slot-locked .schedule-card-head{background:#eaf5ef}
+#confirm-detail{white-space:pre-line;text-align:left;margin-bottom:16px}
