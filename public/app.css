@@ -415,3 +415,4 @@ dialog>.dialog-head{padding:22px 22px 0}
 .cong-new-inline input{width:140px;padding:5px 8px;font-size:.88rem}
 .email-cell{max-width:220px;overflow-wrap:anywhere}
 .phone-cell{white-space:nowrap}
+#notice-text{white-space:pre-line;max-height:55vh;overflow:auto;text-align:left}

@@ -575,6 +575,33 @@ async function removeScheduleAssignments(req:Request,env:Env,eventId:string){
   await env.DB.batch(stmts);
   return json({ok:true,removed:rows.results.length});
 }
+// ---- Schedule explanations and conflict checks ----------------------------
+const toMin=(t:string)=>{const m=/^(\d{1,2}):(\d{2})/.exec(t||'');return m?Number(m[1])*60+Number(m[2]):0};
+const fmt12=(t:string)=>{const m=toMin(t),h=Math.floor(m/60),mm=String(m%60).padStart(2,'0');return `${h%12||12}:${mm} ${h>=12?'PM':'AM'}`};
+const fmtDay=(d:string)=>{const x=new Date(d+'T12:00:00Z');return isNaN(+x)?d:x.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',timeZone:'UTC'})};
+const slotLabel=(x:{task_name:string,date:string,start_time:string,end_time?:string|null})=>`${x.task_name} (${fmtDay(x.date)}, ${fmt12(x.start_time)}${x.end_time?' – '+fmt12(x.end_time):''})`;
+// A slot with no end time is treated as lasting until the next slot of the same
+// task that day, or one hour if it is the last one.
+function effectiveRange(x:{task_id?:string,date:string,start_time:string,end_time?:string|null},all:SchedSlot[]){
+  const start=toMin(x.start_time);if(x.end_time)return [start,toMin(x.end_time)];
+  const next=all.filter(o=>o.task_id===x.task_id&&o.date===x.date&&toMin(o.start_time)>start).map(o=>toMin(o.start_time)).sort((a,b)=>a-b)[0];
+  return [start,next??start+60];
+}
+type UnfilledInfo={slot_id:string,task_name:string,date:string,start_time:string,end_time:string|null,missing:number,needed:number,reason:string};
+function unfilledReason(s:SchedSlot,d:{volunteers:SchedVolunteer[],avail:Record<string,Set<string>>,excluded:Set<string>},assigned:any[]){
+  const eligible=d.volunteers.filter(v=>allowsEligibility(v,s.eligibility)&&(!s.department_id||v.department_id===s.department_id)&&(!s.assistant_area_id||v.assistant_area_id===s.assistant_area_id));
+  if(!eligible.length)return `No volunteers in this department meet the task's eligibility${s.eligibility.length?' ('+s.eligibility.join(', ')+')':''}.`;
+  const available=eligible.filter(v=>!(d.avail[v.id]&&!d.avail[v.id].has(s.id))&&!d.excluded.has(`${v.id}|${s.id}`));
+  if(!available.length)return `None of the ${eligible.length} eligible volunteer(s) are available at this time.`;
+  const free=available.filter(v=>!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id!==s.id&&slotOverlaps(s,a))&&!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id===s.id));
+  if(!free.length)return `All ${available.length} available eligible volunteer(s) are already scheduled at this time.`;
+  return `The ${free.length} remaining volunteer(s) can't be paired with the people already in this slot (gender, family or minor rules).`;
+}
+function noteUnfilled(map:Map<string,UnfilledInfo>,s:SchedSlot,d:any,assigned:any[]){
+  const cur=map.get(s.id);if(cur){cur.missing++;return}
+  map.set(s.id,{slot_id:s.id,task_name:s.task_name,date:s.date,start_time:s.start_time,end_time:s.end_time||null,missing:1,needed:s.positions_needed,reason:unfilledReason(s,d,assigned)});
+}
+const unfilledList=(m:Map<string,UnfilledInfo>)=>[...m.values()].sort((a,b)=>a.date.localeCompare(b.date)||a.start_time.localeCompare(b.start_time)||a.task_name.localeCompare(b.task_name));
 async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,volunteerId:string,ignoreAssignmentId=''){
   const d=await schedulingData(env,eventId),s=d.slots.find(x=>x.id===slotId),v=d.volunteers.find(x=>x.id===volunteerId);
   if(!s||!v)return {error:'Volunteer or time slot was not found.'};
@@ -585,9 +612,13 @@ async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,
   const sm=new Map(d.slots.map(x=>[x.id,x])),vm=new Map(d.volunteers.map(x=>[x.id,x]));
   const assigned=d.assignments.filter(a=>a.id!==ignoreAssignmentId).map(a=>{const x=sm.get(a.slot_id);return x?{id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name}:null}).filter(Boolean) as any[];
   if(!anyoneCompatible(v,s,assigned,vm))return {error:s.eligibility.includes('Family Only')?'Family Only requires everyone in this slot to have the same family.':'For an Anyone task, volunteers in the same slot must be the same gender or have the same family.'};
-  if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return {error:'This volunteer already has an overlapping assignment.'};
+  const clash=assigned.filter(a=>a.volunteer_id===v.id&&slotOverlaps(s,a));
+  if(clash.length)return {error:`${v.first_name} ${v.last_name} is already scheduled at this time: ${clash.map(slotLabel).join('; ')}. Remove or change that assignment first.`};
   const after=[...assigned,{slot_id:s.id,volunteer_id:v.id}],orphan=uncoveredMinor(s.id,after,vm);
   if(orphan)return {error:orphan.id===v.id?`${v.first_name} ${v.last_name} is a minor. ${MINOR_RULE_TEXT}`:`This change would leave ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in this shift.`};
+  const [ns,ne]=effectiveRange(s,d.slots);
+  const near=assigned.filter(a=>{if(a.volunteer_id!==v.id||a.date!==s.date||a.slot_id===s.id)return false;const o=sm.get(a.slot_id);if(!o)return false;const [os,oe]=effectiveRange(o,d.slots);return ns<oe&&os<ne});
+  if(near.length)return {ok:true,warning:`${v.first_name} ${v.last_name} is already scheduled close to this time: ${near.map(slotLabel).join('; ')}. One of these shifts has no end time, so they may overlap.`};
   return {ok:true};
 }
 async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assignmentId:string){
@@ -595,8 +626,9 @@ async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assi
   if(!a)return nf('Assignment not found');
   const b=await body(req);if(!b)return bad('Invalid JSON');
   const volunteerId=clean(b.volunteer_id);if(!volunteerId)return bad('Volunteer is required');
-  const check=await validateAssignmentCandidate(env,eventId,a.slot_id,volunteerId,assignmentId);
+  const check:any=await validateAssignmentCandidate(env,eventId,a.slot_id,volunteerId,assignmentId);
   if('error' in check)return bad(check.error);
+  if(check.warning&&b.force!==true)return json({ok:false,needs_confirm:true,warning:check.warning});
   await env.DB.prepare(`UPDATE assignments SET volunteer_id=?,updated_at=? WHERE id=? AND event_id=?`).bind(volunteerId,new Date().toISOString(),assignmentId,eventId).run();
   return json({ok:true});
 }
@@ -609,7 +641,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
   const total:Record<string,number>={},taskCount:Record<string,Record<string,number>>={};
   d.volunteers.forEach(v=>{total[v.id]=0;taskCount[v.id]={}});
   for(const a of assigned){const s=sm.get(a.slot_id);if(s&&total[a.volunteer_id]!==undefined){total[a.volunteer_id]++;taskCount[a.volunteer_id][s.task_id]=(taskCount[a.volunteer_id][s.task_id]||0)+1}}
-  const rows:any[][]=[];let unfilled=0;
+  const rows:any[][]=[];let unfilled=0;const unfilledSlots=new Map<string,UnfilledInfo>();
   for(const s of d.slots){
     if(!Number(s.auto_schedule))continue;
     const need=Math.max(0,s.positions_needed-assigned.filter(a=>a.slot_id===s.id).length);
@@ -625,7 +657,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
         return true;
       }).sort((a,b)=>(total[a.id]-total[b.id])||((taskCount[a.id][s.task_id]||0)-(taskCount[b.id][s.task_id]||0))||(Math.random()-.5));
-      if(!candidates.length){unfilled++;continue}
+      if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,d,assigned);continue}
       const v=candidates[0],id=crypto.randomUUID(),now=new Date().toISOString();
       rows.push([id,eventId,s.id,v.id,1,0,0,0,now,now]);
       assigned.push({id,slot_id:s.id,volunteer_id:v.id,date:s.date,start_time:s.start_time,end_time:s.end_time,task_name:s.task_name});
@@ -633,7 +665,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
     }
   }
   if(rows.length)await env.DB.batch(rows.map(r=>env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(...r)));
-  return json({ok:true,created:rows.length,unfilled});
+  return json({ok:true,created:rows.length,unfilled,unfilled_slots:unfilledList(unfilledSlots)});
 }
 
 async function rebalanceWithNewVolunteers(env:Env,eventId:string){
@@ -733,7 +765,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
   }
   for(const a of assigned){const s=sm.get(a.slot_id);if(s&&total[a.volunteer_id]!==undefined)record(a.volunteer_id,s);}
 
-  const rows:any[][]=[];let unfilled=0;
+  const rows:any[][]=[];let unfilled=0;const unfilledSlots=new Map<string,UnfilledInfo>();
   for(const s of d.slots){
     if(!Number(s.auto_schedule))continue;
     const already=assigned.filter(a=>a.slot_id===s.id).length,need=Math.max(0,s.positions_needed-already);
@@ -749,7 +781,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
         return true;
       });
-      if(!candidates.length){unfilled++;continue;}
+      if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,d,assigned);continue;}
       const sb=band(s),closing=isClosing(s);
       candidates.sort((a,b)=>{
         const score=(v:SchedVolunteer)=>{
@@ -780,7 +812,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
   for(const r of rows)statements.push(env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(...r));
   await env.DB.batch(statements);
   const uncovered=new Set<string>();for(const s of d.slots){const m=uncoveredMinor(s.id,assigned,vm);if(m)uncovered.add(`${m.first_name} ${m.last_name}`)}
-  return json({ok:true,created:rows.length,unfilled,warning:uncovered.size?`Locked assignment(s) for ${[...uncovered].join(', ')} (minor) do not have an adult family member of the same gender in the shift. Please review them.`:''});
+  return json({ok:true,created:rows.length,unfilled,unfilled_slots:unfilledList(unfilledSlots),warning:uncovered.size?`Locked assignment(s) for ${[...uncovered].join(', ')} (minor) do not have an adult family member of the same gender in the shift. Please review them.`:''});
 }
 
 async function setEntryLink(req:Request,env:Env,eventId:string){
