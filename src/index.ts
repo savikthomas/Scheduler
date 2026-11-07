@@ -213,6 +213,9 @@ function ensureVolunteerColumns(env:Env){
     const have=new Set(r.results.map(x=>x.name));
     if(!have.has('congregation'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN congregation TEXT`).run().catch(()=>{});
     if(!have.has('minor'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN minor INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
+    if(!have.has('checked_in_at'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
+    const cr=await env.DB.prepare(`PRAGMA table_info(congregation_captains)`).all<{name:string}>();
+    if(cr.results.length&&!cr.results.some(x=>x.name==='checked_in_at'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();
     if(!sr.results.some(x=>x.name==='locked'))await env.DB.prepare(`ALTER TABLE slots ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
   })().catch(e=>{volunteerColumnsReady=null;throw e});
@@ -787,6 +790,15 @@ async function listSchedule(req:Request,env:Env,eventId:string){
   `).bind(eventId,dep,dep).all<any>();
   return json({ok:true,schedule:r.results,slots:sl.results});
 }
+// ---- Check-in (does not touch the schedule) --------------------------------------
+async function setCheckIn(req:Request,env:Env,eventId:string){
+  if(!await getEvent(env,eventId))return nf('Event not found');
+  const b=await body(req);if(!b||!Array.isArray(b.ids)||!b.ids.length)return bad('Select at least one person.');
+  const table=b.kind==='captain'?'congregation_captains':b.kind==='volunteer'?'volunteers':'';if(!table)return bad('Invalid check-in type');
+  const ids=[...new Set(b.ids.map(clean).filter(Boolean))].slice(0,500),at=b.checked_in?new Date().toISOString():null;
+  await env.DB.batch(ids.map(id=>env.DB.prepare(`UPDATE ${table} SET checked_in_at=CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(checked_in_at,?) END,updated_at=? WHERE id=? AND event_id=?`).bind(at,at,new Date().toISOString(),id,eventId)));
+  return json({ok:true,updated:ids.length,checked_in_at:at});
+}
 async function generateSchedule(req:Request,env:Env,eventId:string){
   const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
   const b=await body(req)||{},departmentId=clean(b.department_id);
@@ -1232,7 +1244,7 @@ function parseCaptain(b:Record<string,unknown>){
 }
 async function listCaptains(env:Env,eventId:string,departmentId:string){
   const gate=await cleaningDepartment(env,eventId,departmentId); if(!gate.ok)return gate.response;
-  const r=await env.DB.prepare(`SELECT id,event_id,department_id,name,email,phone,congregation_name,created_at,updated_at FROM congregation_captains WHERE event_id=? AND department_id=? ORDER BY congregation_name COLLATE NOCASE,name COLLATE NOCASE`).bind(eventId,gate.id).all();
+  const r=await env.DB.prepare(`SELECT id,event_id,department_id,name,email,phone,congregation_name,checked_in_at,created_at,updated_at FROM congregation_captains WHERE event_id=? AND department_id=? ORDER BY congregation_name COLLATE NOCASE,name COLLATE NOCASE`).bind(eventId,gate.id).all();
   return json({ok:true,captains:r.results});
 }
 async function createCaptain(req:Request,env:Env,eventId:string){
@@ -1367,6 +1379,8 @@ export default {async fetch(request,env):Promise<Response>{
   if(srm&&request.method==='POST')return removeScheduleAssignments(request,env,decodeURIComponent(srm[1]));
   const sfo=p.match(/^\/api\/events\/([^/]+)\/schedule\/fill-open$/);
   if(sfo&&request.method==='POST')return fillOpenScheduleSlots(env,decodeURIComponent(sfo[1]));
+  const cin=p.match(/^\/api\/events\/([^/]+)\/check-in$/);
+  if(cin&&request.method==='PUT')return setCheckIn(request,env,decodeURIComponent(cin[1]));
   const srb=p.match(/^\/api\/events\/([^/]+)\/schedule\/rebalance-new$/);
   if(srb&&request.method==='POST')return rebalanceWithNewVolunteers(env,decodeURIComponent(srb[1]));
   const mail=p.match(/^\/api\/events\/([^/]+)\/schedule-email$/);if(mail&&request.method==='POST')return sendScheduleEmails(request,env,decodeURIComponent(mail[1]));

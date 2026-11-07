@@ -432,3 +432,19 @@ dialog>.dialog-head{padding:22px 22px 0}
 #sch-summary .all-filled{color:var(--accent);font-weight:800}
 #sch-summary .open-only{display:inline-flex;align-items:center;gap:6px;margin-left:14px;font-weight:600;color:var(--muted);cursor:pointer}
 #sch-summary .open-only input{width:auto;margin:0}
+/* Check-In tab */
+.checkin-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:4px 0 14px}
+.checkin-tools #ci-search{flex:1 1 320px;max-width:520px}
+.ci-filter{display:inline-grid;grid-template-columns:repeat(3,auto)}
+.ci-sort{display:flex;align-items:center;gap:8px;font-weight:700;font-size:.88rem;color:#405048}
+.ci-sort select{width:auto}
+.ci-table td{vertical-align:middle}
+.ci-table tr.is-in td{background:#f4faf6}
+.ci-in{color:var(--accent);font-weight:800;white-space:nowrap}
+.ci-out{color:#8a6510;font-weight:700;white-space:nowrap}
+.ci-action{text-align:right;width:1%;white-space:nowrap}
+.ci-action button{min-width:96px;padding:8px 14px}
+.select-cell{width:36px}
+.select-cell input{width:auto}
+.checkin-summary{margin-bottom:12px}
+@media(max-width:650px){.ci-filter{width:100%;grid-template-columns:repeat(3,1fr)}.ci-table th:nth-child(4),.ci-table td:nth-child(4),.ci-table th:nth-child(5),.ci-table td:nth-child(5){display:none}}
