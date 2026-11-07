@@ -420,3 +420,15 @@ dialog>.dialog-head{padding:22px 22px 0}
 .schedule-card.slot-locked{border-color:#9fcbb5;box-shadow:0 0 0 1px #cfe5d9}
 .schedule-card.slot-locked .schedule-card-head{background:#eaf5ef}
 #confirm-detail{white-space:pre-line;text-align:left;margin-bottom:16px}
+/* Schedule board: filled / needed and open spots */
+.fill-pill.full{background:var(--accent-soft);color:var(--accent)}
+.fill-pill.short{background:#fbf3df;color:#8a6510}
+.fill-pill.over{background:#e8f0fb;color:#2b5797}
+.schedule-card.has-open{border-color:#ecd9a6}
+.open-spot-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:9px}
+.open-tag{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#8a6510;background:#fbf3df;border-radius:6px;padding:4px 7px}
+.open-spot-row select{border-style:dashed;color:#6b7570;padding:7px 9px;font-size:.9rem}
+#sch-summary .open-count{color:#8a6510;font-weight:800}
+#sch-summary .all-filled{color:var(--accent);font-weight:800}
+#sch-summary .open-only{display:inline-flex;align-items:center;gap:6px;margin-left:14px;font-weight:600;color:var(--muted);cursor:pointer}
+#sch-summary .open-only input{width:auto;margin:0}

@@ -650,6 +650,22 @@ async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,
   if(orphan)issues.push(orphan.id===v.id?`${who} is a minor. ${MINOR_RULE_TEXT}`:`This leaves ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in this shift.`);
   return issues.length?{ok:true,warning:issues.join('\n'),issues}:{ok:true};
 }
+// Manually put a volunteer into an open spot of a time slot (same rule checks and
+// "Assign Anyway" override as changing an existing assignment).
+async function addAssignmentToSlot(req:Request,env:Env,eventId:string,slotId:string){
+  const slot=await env.DB.prepare(`SELECT id FROM slots WHERE id=? AND event_id=?`).bind(slotId,eventId).first();
+  if(!slot)return nf('Time slot not found');
+  const b=await body(req);if(!b)return bad('Invalid JSON');
+  const volunteerId=clean(b.volunteer_id);if(!volunteerId)return bad('Volunteer is required');
+  const dup=await env.DB.prepare(`SELECT id FROM assignments WHERE slot_id=? AND volunteer_id=? AND event_id=?`).bind(slotId,volunteerId,eventId).first();
+  if(dup)return bad('This volunteer is already in this time slot.');
+  const check:any=await validateAssignmentCandidate(env,eventId,slotId,volunteerId);
+  if('error' in check)return bad(check.error);
+  if(check.warning&&b.force!==true)return json({ok:false,needs_confirm:true,warning:check.warning});
+  const id=crypto.randomUUID(),now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,0,0,0,0,?,?)`).bind(id,eventId,slotId,volunteerId,now,now).run();
+  return json({ok:true,id});
+}
 async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assignmentId:string){
   const a=await env.DB.prepare(`SELECT id,slot_id FROM assignments WHERE id=? AND event_id=?`).bind(assignmentId,eventId).first<{id:string,slot_id:string}>();
   if(!a)return nf('Assignment not found');
@@ -763,7 +779,13 @@ async function listSchedule(req:Request,env:Env,eventId:string){
    JOIN slots s ON s.id=a.slot_id JOIN tasks t ON t.id=s.task_id
    WHERE a.event_id=? AND (?='' OR t.department_id=?) ORDER BY s.date,s.start_time,t.name,v.last_name,v.first_name
   `).bind(eventId,clean(new URL(req.url).searchParams.get('department_id')),clean(new URL(req.url).searchParams.get('department_id'))).all<any>();
-  return json({ok:true,schedule:r.results});
+  const dep=clean(new URL(req.url).searchParams.get('department_id'));
+  const sl=await env.DB.prepare(`
+   SELECT s.id slot_id,s.date,s.start_time,s.end_time,s.positions_needed,COALESCE(s.locked,0) slot_locked,t.name task_name,t.auto_schedule
+   FROM slots s JOIN tasks t ON t.id=s.task_id
+   WHERE s.event_id=? AND t.active=1 AND (?='' OR t.department_id=?) ORDER BY s.date,s.start_time,t.name
+  `).bind(eventId,dep,dep).all<any>();
+  return json({ok:true,schedule:r.results,slots:sl.results});
 }
 async function generateSchedule(req:Request,env:Env,eventId:string){
   const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
@@ -1337,6 +1359,8 @@ export default {async fetch(request,env):Promise<Response>{
   if(sal&&request.method==='PUT'){const b=await body(request);return setOneAssignmentLock(env,decodeURIComponent(sal[1]),decodeURIComponent(sal[2]),!!b?.locked)}
   const ssl=p.match(/^\/api\/events\/([^/]+)\/schedule\/slots\/([^/]+)\/lock$/);
   if(ssl&&request.method==='PUT'){const b=await body(request);return setSlotLock(env,decodeURIComponent(ssl[1]),decodeURIComponent(ssl[2]),!!b?.locked)}
+  const sad=p.match(/^\/api\/events\/([^/]+)\/schedule\/slots\/([^/]+)\/assign$/);
+  if(sad&&request.method==='POST')return addAssignmentToSlot(request,env,decodeURIComponent(sad[1]),decodeURIComponent(sad[2]));
   const sac=p.match(/^\/api\/events\/([^/]+)\/schedule\/assignments\/([^/]+)\/volunteer$/);
   if(sac&&request.method==='PUT')return changeAssignmentVolunteer(request,env,decodeURIComponent(sac[1]),decodeURIComponent(sac[2]));
   const srm=p.match(/^\/api\/events\/([^/]+)\/schedule\/remove$/);
