@@ -493,6 +493,13 @@ function allowsEligibility(v:SchedVolunteer,values:string[]){
   const roles=values.filter(x=>['Overseer','Assistant','Keyman','Captain'].includes(x));
   return !roles.length||roles.some(r=>v.roles.includes(r));
 }
+// Overseers, Assistants and Keymen are left out of automatic scheduling (they can
+// still be assigned by hand), unless the task itself asks for one of their roles.
+const LEADER_ROLES=['Overseer','Assistant','Keyman'];
+function autoSchedulable(v:SchedVolunteer,s:SchedSlot){
+  const mine=v.roles.filter(r=>LEADER_ROLES.includes(r));
+  return !mine.length||mine.some(r=>s.eligibility.includes(r));
+}
 function anyoneCompatible(v:SchedVolunteer,slot:SchedSlot,assigned:{volunteer_id:string,slot_id:string}[],vm:Map<string,SchedVolunteer>){
   const peers=assigned.filter(a=>a.slot_id===slot.id).map(a=>vm.get(a.volunteer_id)).filter(Boolean) as SchedVolunteer[];
   if(!peers.length)return true;
@@ -591,7 +598,9 @@ type UnfilledInfo={slot_id:string,task_name:string,date:string,start_time:string
 function unfilledReason(s:SchedSlot,d:{volunteers:SchedVolunteer[],avail:Record<string,Set<string>>,excluded:Set<string>},assigned:any[]){
   const eligible=d.volunteers.filter(v=>allowsEligibility(v,s.eligibility)&&(!s.department_id||v.department_id===s.department_id)&&(!s.assistant_area_id||v.assistant_area_id===s.assistant_area_id));
   if(!eligible.length)return `No volunteers in this department meet the task's eligibility${s.eligibility.length?' ('+s.eligibility.join(', ')+')':''}.`;
-  const available=eligible.filter(v=>!(d.avail[v.id]&&!d.avail[v.id].has(s.id))&&!d.excluded.has(`${v.id}|${s.id}`));
+  const auto=eligible.filter(v=>autoSchedulable(v,s));
+  if(!auto.length)return `All ${eligible.length} eligible volunteer(s) are Overseers, Assistants or Keymen, who are only assigned by hand.`;
+  const available=auto.filter(v=>!(d.avail[v.id]&&!d.avail[v.id].has(s.id))&&!d.excluded.has(`${v.id}|${s.id}`));
   if(!available.length)return `None of the ${eligible.length} eligible volunteer(s) are available at this time.`;
   const free=available.filter(v=>!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id!==s.id&&slotOverlaps(s,a))&&!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id===s.id));
   if(!free.length)return `All ${available.length} available eligible volunteer(s) are already scheduled at this time.`;
@@ -648,6 +657,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
     for(let p=0;p<need;p++){
       const candidates=d.volunteers.filter(v=>{
         if(!allowsEligibility(v,s.eligibility))return false;
+        if(!autoSchedulable(v,s))return false;
         if(s.department_id&&v.department_id!==s.department_id)return false;
         if(s.assistant_area_id&&v.assistant_area_id!==s.assistant_area_id)return false;
         if(d.avail[v.id]&&!d.avail[v.id].has(s.id))return false;
@@ -692,6 +702,7 @@ async function rebalanceWithNewVolunteers(env:Env,eventId:string){
       for(const a of donorAssignments){
         const s=sm.get(a.slot_id);if(!s)continue;
         if(!allowsEligibility(nv,s.eligibility))continue;
+        if(!autoSchedulable(nv,s))continue;
         if(d.avail[nv.id]&&!d.avail[nv.id].has(s.id))continue;
         if(d.excluded.has(`${nv.id}|${s.id}`))continue;
         const others=assigned.filter(x=>x.id!==a.id);
@@ -772,6 +783,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
     for(let p=0;p<need;p++){
       const candidates=d.volunteers.filter(v=>{
         if(!allowsEligibility(v,s.eligibility))return false;
+        if(!autoSchedulable(v,s))return false;
         if(s.department_id&&v.department_id!==s.department_id)return false;
         if(s.assistant_area_id&&v.assistant_area_id!==s.assistant_area_id)return false;
         if(d.avail[v.id]&&!d.avail[v.id].has(s.id))return false;
