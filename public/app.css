@@ -457,3 +457,10 @@ dialog>.dialog-head{padding:22px 22px 0}
 .extra-add{margin-top:2px}
 .extra-add .link-button{font-size:.84rem;padding:4px 2px}
 .extra-tag{color:#2b5797;background:#e8f0fb}
+.vshifts{margin:14px 0 4px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2)}
+.vshifts-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+#vshifts-list{display:grid;gap:6px;max-height:240px;overflow:auto}
+.vshift{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;background:#fff;border:1px solid var(--line);border-radius:9px}
+.vshift .muted{font-size:.84rem}
+.vshift-lock{color:var(--accent);font-weight:800}
+.vshift-remove{padding:6px 11px;font-size:.84rem}
