@@ -553,6 +553,15 @@ function uncoveredMinor(slotId:string,assigned:{volunteer_id:string,slot_id:stri
   for(const a of assigned){if(a.slot_id!==slotId)continue;const v=vm.get(a.volunteer_id);if(v&&Number(v.minor)&&!hasAdultRelative(v,slotId,assigned,vm))return v;}
   return null;
 }
+// Automatic scheduling keeps minors from different families in different shifts,
+// so families with children are spread out instead of grouped into one shift.
+function minorFamilyOk(v:SchedVolunteer,slotId:string,assigned:{volunteer_id:string,slot_id:string}[],vm:Map<string,SchedVolunteer>){
+  if(!Number(v.minor))return true;const fam=famKey(v);
+  return !assigned.some(a=>{if(a.slot_id!==slotId||a.volunteer_id===v.id)return false;const p=vm.get(a.volunteer_id);return !!p&&Number(p.minor)&&famKey(p)!==fam});
+}
+function otherMinorFamilyIn(v:SchedVolunteer,slotId:string,assigned:{volunteer_id:string,slot_id:string}[],vm:Map<string,SchedVolunteer>){
+  const fam=famKey(v);return assigned.some(a=>{if(a.slot_id!==slotId)return false;const p=vm.get(a.volunteer_id);return !!p&&Number(p.minor)&&famKey(p)!==fam});
+}
 const MINOR_RULE_TEXT='A minor can only be scheduled in a shift that also has an adult family member of the same gender.';
 function mergeWindows(list:{start_time:string,end_time:string}[]){
   const r:[number,number][]=[];
@@ -741,6 +750,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
         if(d.excluded.has(`${v.id}|${s.id}`))return false;
         if(!anyoneCompatible(v,s,assigned,vm))return false;
         if(!minorOk(v,s.id,assigned,vm))return false;
+        if(!minorFamilyOk(v,s.id,assigned,vm))return false;
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
         return true;
       }).sort((a,b)=>(total[a.id]-total[b.id])||((taskCount[a.id][s.task_id]||0)-(taskCount[b.id][s.task_id]||0))||(Math.random()-.5));
@@ -786,6 +796,7 @@ async function rebalanceWithNewVolunteers(env:Env,eventId:string){
         if(!anyoneCompatible(nv,s,others,vm))continue;
         if(others.some(x=>x.volunteer_id===nv.id&&slotOverlaps(s,x)))continue;
         if(uncoveredMinor(s.id,[...others,{slot_id:s.id,volunteer_id:nv.id}],vm))continue;
+        if(!minorFamilyOk(nv,s.id,others,vm))continue;
         const old=a.volunteer_id;
         a.volunteer_id=nv.id;
         counts[old]--;counts[nv.id]++;
@@ -857,7 +868,7 @@ async function distributeSpare(req:Request,env:Env,eventId:string){
   for(const a of d.assignments){const x=sm.get(a.slot_id);if(x)assigned.push({id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,locked:Number(a.locked),date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name})}
   const count:Record<string,number>={};d.volunteers.forEach(v=>count[v.id]=0);assigned.forEach(a=>{if(count[a.volunteer_id]!==undefined)count[a.volunteer_id]++});
   const target=(x:SchedSlot|undefined)=>!!x&&taskIds.has(x.task_id)&&!Number((x as any).locked)&&!started(x);
-  const fits=(v:SchedVolunteer,x:SchedSlot,others:any[])=>allowsEligibility(v,x.eligibility)&&autoSchedulable(v,x)&&(!x.department_id||v.department_id===x.department_id)&&(!x.assistant_area_id||v.assistant_area_id===x.assistant_area_id)&&!(d.avail[v.id]&&!d.avail[v.id].has(x.id))&&!d.excluded.has(`${v.id}|${x.id}`)&&anyoneCompatible(v,x,others,vm)&&minorOk(v,x.id,others,vm)&&!others.some(o=>o.volunteer_id===v.id&&(o.slot_id===x.id||slotOverlaps(x,o)))&&!uncoveredMinor(x.id,[...others,{slot_id:x.id,volunteer_id:v.id}],vm);
+  const fits=(v:SchedVolunteer,x:SchedSlot,others:any[])=>allowsEligibility(v,x.eligibility)&&autoSchedulable(v,x)&&(!x.department_id||v.department_id===x.department_id)&&(!x.assistant_area_id||v.assistant_area_id===x.assistant_area_id)&&!(d.avail[v.id]&&!d.avail[v.id].has(x.id))&&!d.excluded.has(`${v.id}|${x.id}`)&&anyoneCompatible(v,x,others,vm)&&minorOk(v,x.id,others,vm)&&!others.some(o=>o.volunteer_id===v.id&&(o.slot_id===x.id||slotOverlaps(x,o)))&&!uncoveredMinor(x.id,[...others,{slot_id:x.id,volunteer_id:v.id}],vm)&&minorFamilyOk(v,x.id,others,vm);
   const changes=new Map<string,string>(),inserts:any[][]=[];let moved=0;
   // 1) take over shifts from the busiest volunteers
   for(let guard=0;guard<3000;guard++){
@@ -909,6 +920,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
         lateCount:Record<string,number>={},closingDays:Record<string,Set<string>>={},dayBands:Record<string,Record<string,string[]>>={};
   d.volunteers.forEach(v=>{total[v.id]=0;weighted[v.id]=0;taskCount[v.id]={};lateCount[v.id]=0;closingDays[v.id]=new Set();dayBands[v.id]={};});
 
+  const minorsByFam:Record<string,SchedVolunteer[]>={};for(const v of d.volunteers)if(Number(v.minor)&&famKey(v))(minorsByFam[famKey(v)]??=[]).push(v);
   const byDay:Record<string,SchedSlot[]>={};for(const s of d.slots)(byDay[s.date]??=[]).push(s);
   const dayStarts:Record<string,string[]>={},closingStart:Record<string,string>={};
   for(const [day,ss] of Object.entries(byDay)){
@@ -936,16 +948,25 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
         if(d.excluded.has(`${v.id}|${s.id}`))return false;
         if(!anyoneCompatible(v,s,assigned,vm))return false;
         if(!minorOk(v,s.id,assigned,vm))return false;
+        if(!minorFamilyOk(v,s.id,assigned,vm))return false;
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
         return true;
       });
       if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,d,assigned);continue;}
-      const sb=band(s),closing=isClosing(s);
+      const sb=band(s),closing=isClosing(s),left=need-p;
+      // Children who could come along with this adult into this shift.
+      const kidsFor=(v:SchedVolunteer)=>{if(Number(v.minor)||left<2||otherMinorFamilyIn(v,s.id,assigned,vm))return [] as SchedVolunteer[];const fam=famKey(v);if(!fam)return [];
+        return (minorsByFam[fam]||[]).filter(m=>m.gender===v.gender&&allowsEligibility(m,s.eligibility)&&(!s.department_id||m.department_id===s.department_id)&&(!s.assistant_area_id||m.assistant_area_id===s.assistant_area_id)&&!(d.avail[m.id]&&!d.avail[m.id].has(s.id))&&!d.excluded.has(`${m.id}|${s.id}`)&&!assigned.some(x=>x.volunteer_id===m.id&&(x.slot_id===s.id||slotOverlaps(s,x))))};
       candidates.sort((a,b)=>{
         const score=(v:SchedVolunteer)=>{
           // Weighted workload is the primary fairness measure. A closing/final
           // shift counts approximately twice a normal assignment.
           let n=weighted[v.id]*100;
+          // Minors join the shift their adult relative is already in.
+          if(Number(v.minor))n-=400;
+          // Prefer adults who can bring children who have few shifts so far
+          // (families are spread across shifts: one family's minors per shift).
+          else{const kids=kidsFor(v).map(m=>Math.max(0,2-total[m.id])*70).sort((x,y)=>y-x).slice(0,left-1);n-=kids.reduce((t,x)=>t+x,0)}
           // Repeating the exact same task is discouraged.
           n+=(taskCount[v.id][s.task_id]||0)*34;
           // Rotate late shifts across the event.
