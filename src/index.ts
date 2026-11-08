@@ -214,6 +214,8 @@ function ensureVolunteerColumns(env:Env){
     if(!have.has('congregation'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN congregation TEXT`).run().catch(()=>{});
     if(!have.has('minor'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN minor INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
     if(!have.has('checked_in_at'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS availability_windows(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,volunteer_id TEXT NOT NULL,date TEXT NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,created_at TEXT NOT NULL)`).run().catch(()=>{});
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_availability_windows_vol ON availability_windows(event_id,volunteer_id)`).run().catch(()=>{});
     const cr=await env.DB.prepare(`PRAGMA table_info(congregation_captains)`).all<{name:string}>();
     if(cr.results.length&&!cr.results.some(x=>x.name==='checked_in_at'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();
@@ -459,13 +461,34 @@ async function getAvailability(env:Env,eventId:string){
   const r=await env.DB.prepare(`SELECT volunteer_id,slot_id FROM availability WHERE event_id=? ORDER BY volunteer_id,slot_id`).bind(eventId).all<{volunteer_id:string,slot_id:string}>();
   const byVolunteer:Record<string,string[]>={};
   for(const x of r.results)(byVolunteer[x.volunteer_id]??=[]).push(x.slot_id);
-  return json({ok:true,availability:byVolunteer});
+  const w=await env.DB.prepare(`SELECT volunteer_id,date,start_time,end_time FROM availability_windows WHERE event_id=? ORDER BY date,start_time`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
+  const windows:Record<string,{date:string,start_time:string,end_time:string}[]>={};
+  for(const x of w.results)(windows[x.volunteer_id]??=[]).push({date:x.date,start_time:x.start_time,end_time:x.end_time});
+  return json({ok:true,availability:byVolunteer,windows});
 }
 async function saveVolunteerAvailability(req:Request,env:Env,eventId:string,volunteerId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
   const v=await env.DB.prepare(`SELECT id FROM volunteers WHERE id=? AND event_id=?`).bind(volunteerId,eventId).first();
   if(!v)return nf('Volunteer not found');
-  const b=await body(req); if(!b||!Array.isArray(b.slot_ids))return bad('slot_ids[] is required');
+  const b=await body(req);
+  if(b&&Array.isArray(b.windows)){
+    const list:{date:string,start_time:string,end_time:string}[]=[];
+    for(const w of b.windows.slice(0,100)){
+      const date=clean(w?.date),st=clean(w?.start_time),et=clean(w?.end_time);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!/^\d{2}:\d{2}$/.test(st)||!/^\d{2}:\d{2}$/.test(et))return bad('Each availability time needs a date, start time and end time.');
+      if(et<=st)return bad(`The end time must be after the start time (${fmt12(st)} – ${fmt12(et)}).`);
+      list.push({date,start_time:st,end_time:et});
+    }
+    const now=new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM availability_windows WHERE event_id=? AND volunteer_id=?`).bind(eventId,volunteerId),
+      env.DB.prepare(`DELETE FROM availability WHERE event_id=? AND volunteer_id=?`).bind(eventId,volunteerId),
+      ...list.map(w=>env.DB.prepare(`INSERT INTO availability_windows(id,event_id,volunteer_id,date,start_time,end_time,created_at) VALUES(?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,volunteerId,w.date,w.start_time,w.end_time,now))
+    ]);
+    return json({ok:true,windows:list});
+  }
+  if(!b||!Array.isArray(b.slot_ids))return bad('slot_ids[] is required');
+  await env.DB.prepare(`DELETE FROM availability_windows WHERE event_id=? AND volunteer_id=?`).bind(eventId,volunteerId).run().catch(()=>{});
   const ids=[...new Set(b.slot_ids.map(clean).filter(Boolean))];
   if(ids.length){
     const marks=ids.map(()=>'?').join(',');
@@ -531,6 +554,15 @@ function uncoveredMinor(slotId:string,assigned:{volunteer_id:string,slot_id:stri
   return null;
 }
 const MINOR_RULE_TEXT='A minor can only be scheduled in a shift that also has an adult family member of the same gender.';
+function mergeWindows(list:{start_time:string,end_time:string}[]){
+  const r:[number,number][]=[];
+  for(const [a,b] of list.map(w=>[toMin(w.start_time),toMin(w.end_time)] as [number,number]).sort((x,y)=>x[0]-y[0])){const last=r[r.length-1];if(last&&a<=last[1])last[1]=Math.max(last[1],b);else r.push([a,b])}
+  return r;
+}
+function slotFitsWindows(slot:SchedSlot,all:SchedSlot[],list:{date:string,start_time:string,end_time:string}[]){
+  const [s,e]=effectiveRange(slot,all);
+  return mergeWindows(list.filter(w=>w.date===slot.date)).some(([ws,we])=>ws<=s&&e<=we);
+}
 async function schedulingData(env:Env,eventId:string,departmentId=''){
   const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id,COALESCE(minor,0) minor FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
   const rr=await env.DB.prepare(`SELECT volunteer_id,role FROM volunteer_roles WHERE volunteer_id IN (SELECT id FROM volunteers WHERE event_id=? AND active=1)`).bind(eventId).all<any>();
@@ -543,6 +575,12 @@ async function schedulingData(env:Env,eventId:string,departmentId=''){
   const ar=await env.DB.prepare(`SELECT id,event_id,slot_id,volunteer_id,locked,published,created_at FROM assignments WHERE event_id=?`).bind(eventId).all<any>();
   const av=await env.DB.prepare(`SELECT volunteer_id,slot_id FROM availability WHERE event_id=?`).bind(eventId).all<any>();
   const avail:Record<string,Set<string>>={};for(const x of av.results)(avail[x.volunteer_id]??=new Set()).add(x.slot_id);
+  // Availability hours (e.g. Morning, or 1 PM–3 PM) take priority over the older
+  // per-slot selections: a volunteer is available for a shift only if the whole
+  // shift fits inside their hours on that day.
+  const wr=await env.DB.prepare(`SELECT volunteer_id,date,start_time,end_time FROM availability_windows WHERE event_id=?`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
+  const wins:Record<string,any[]>={};for(const w of wr.results)(wins[w.volunteer_id]??=[]).push(w);
+  for(const [vid,list] of Object.entries(wins))avail[vid]=new Set(slots.filter(sl=>slotFitsWindows(sl,slots,list)).map(sl=>sl.id));
   const xr=await env.DB.prepare(`SELECT volunteer_id,slot_id FROM schedule_exclusions WHERE event_id=?`).bind(eventId).all<any>();
   const excluded=new Set(xr.results.map((x:any)=>`${x.volunteer_id}|${x.slot_id}`));
   const slotIds=new Set(slots.map(x=>x.id));return {volunteers,slots,assignments:(ar.results as SchedAssignment[]).filter(a=>!departmentId||slotIds.has(a.slot_id)),avail,excluded};
@@ -784,7 +822,7 @@ async function listSchedule(req:Request,env:Env,eventId:string){
   `).bind(eventId,clean(new URL(req.url).searchParams.get('department_id')),clean(new URL(req.url).searchParams.get('department_id'))).all<any>();
   const dep=clean(new URL(req.url).searchParams.get('department_id'));
   const sl=await env.DB.prepare(`
-   SELECT s.id slot_id,s.date,s.start_time,s.end_time,s.positions_needed,COALESCE(s.locked,0) slot_locked,t.name task_name,t.auto_schedule,(SELECT group_concat(te.value,'|') FROM task_eligibility te WHERE te.task_id=t.id) eligibility
+   SELECT s.id slot_id,s.date,s.start_time,s.end_time,s.positions_needed,COALESCE(s.locked,0) slot_locked,t.id task_id,t.name task_name,t.auto_schedule,(SELECT group_concat(te.value,'|') FROM task_eligibility te WHERE te.task_id=t.id) eligibility
    FROM slots s JOIN tasks t ON t.id=s.task_id
    WHERE s.event_id=? AND t.active=1 AND (?='' OR t.department_id=?) ORDER BY s.date,s.start_time,t.name
   `).bind(eventId,dep,dep).all<any>();
@@ -798,6 +836,60 @@ async function setCheckIn(req:Request,env:Env,eventId:string){
   const ids=[...new Set(b.ids.map(clean).filter(Boolean))].slice(0,500),at=b.checked_in?new Date().toISOString():null;
   await env.DB.batch(ids.map(id=>env.DB.prepare(`UPDATE ${table} SET checked_in_at=CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(checked_in_at,?) END,updated_at=? WHERE id=? AND event_id=?`).bind(at,at,new Date().toISOString(),id,eventId)));
   return json({ok:true,updated:ids.length,checked_in_at:at});
+}
+// ---- Distribute spare volunteers ------------------------------------------------
+// For the chosen tasks only: (1) shifts move from the busiest volunteers to the
+// least busy ones (evening out workload), then (2) volunteers who still have no
+// shift are added as extra helpers (up to max_extra per shift). Locked assignments,
+// locked slots and shifts that have already started are never changed, and every
+// scheduling rule (eligibility, roles, availability, pairing, minors, conflicts)
+// is respected.
+async function distributeSpare(req:Request,env:Env,eventId:string){
+  if(!await getEvent(env,eventId))return nf('Event not found');
+  const b=await body(req)||{},departmentId=clean(b.department_id);
+  const taskIds=new Set<string>(Array.isArray(b.task_ids)?b.task_ids.map(clean).filter(Boolean):[]);
+  if(!taskIds.size)return bad('Select at least one task.');
+  const maxExtra=Math.max(0,Math.min(5,Math.floor(Number(b.max_extra??1))||0));
+  const m=/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/.exec(clean(b.now)),started=(x:SchedSlot)=>!!m&&(x.date<m[1]||(x.date===m[1]&&x.start_time<=m[2]));
+  const d=await schedulingData(env,eventId,departmentId);
+  const sm=new Map(d.slots.map(x=>[x.id,x])),vm=new Map(d.volunteers.map(v=>[v.id,v]));
+  const assigned:any[]=[];
+  for(const a of d.assignments){const x=sm.get(a.slot_id);if(x)assigned.push({id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,locked:Number(a.locked),date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name})}
+  const count:Record<string,number>={};d.volunteers.forEach(v=>count[v.id]=0);assigned.forEach(a=>{if(count[a.volunteer_id]!==undefined)count[a.volunteer_id]++});
+  const target=(x:SchedSlot|undefined)=>!!x&&taskIds.has(x.task_id)&&!Number((x as any).locked)&&!started(x);
+  const fits=(v:SchedVolunteer,x:SchedSlot,others:any[])=>allowsEligibility(v,x.eligibility)&&autoSchedulable(v,x)&&(!x.department_id||v.department_id===x.department_id)&&(!x.assistant_area_id||v.assistant_area_id===x.assistant_area_id)&&!(d.avail[v.id]&&!d.avail[v.id].has(x.id))&&!d.excluded.has(`${v.id}|${x.id}`)&&anyoneCompatible(v,x,others,vm)&&minorOk(v,x.id,others,vm)&&!others.some(o=>o.volunteer_id===v.id&&(o.slot_id===x.id||slotOverlaps(x,o)))&&!uncoveredMinor(x.id,[...others,{slot_id:x.id,volunteer_id:v.id}],vm);
+  const changes=new Map<string,string>(),inserts:any[][]=[];let moved=0;
+  // 1) take over shifts from the busiest volunteers
+  for(let guard=0;guard<3000;guard++){
+    let did=false;
+    const takers=[...d.volunteers].sort((a,b)=>count[a.id]-count[b.id]||Math.random()-.5);
+    for(const t of takers){
+      const donors=assigned.filter(a=>!a.locked&&target(sm.get(a.slot_id))&&a.volunteer_id!==t.id&&count[a.volunteer_id]>=count[t.id]+2).sort((a,b)=>count[b.volunteer_id]-count[a.volunteer_id]);
+      for(const a of donors){
+        const x=sm.get(a.slot_id)!,others=assigned.filter(o=>o.id!==a.id);
+        if(!fits(t,x,others))continue;
+        count[a.volunteer_id]--;count[t.id]++;a.volunteer_id=t.id;changes.set(a.id,t.id);moved++;did=true;break;
+      }
+      if(did)break;
+    }
+    if(!did)break;
+  }
+  // 2) add volunteers who still have no shift as extra helpers
+  const extras:Record<string,number>={};
+  const slotsT=d.slots.filter(x=>target(x));
+  for(const x of slotsT)extras[x.id]=Math.max(0,assigned.filter(a=>a.slot_id===x.id).length-x.positions_needed);
+  let added=0;
+  if(maxExtra>0)for(const v of d.volunteers.filter(v=>count[v.id]===0).sort(()=>Math.random()-.5)){
+    const options=slotsT.filter(x=>extras[x.id]<maxExtra&&fits(v,x,assigned)).sort((a,b)=>extras[a.id]-extras[b.id]||a.date.localeCompare(b.date)||a.start_time.localeCompare(b.start_time));
+    const x=options[0];if(!x)continue;
+    const id=crypto.randomUUID();inserts.push([id,x.id,v.id]);assigned.push({id,slot_id:x.id,volunteer_id:v.id,locked:0,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name});extras[x.id]++;count[v.id]++;added++;
+  }
+  const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];
+  for(const [id,vid] of changes){stmts.push(env.DB.prepare(`UPDATE assignments SET volunteer_id=?,published=0,email_sent=0,sms_sent=0,updated_at=? WHERE id=? AND event_id=? AND locked=0`).bind(vid,now,id,eventId));stmts.push(env.DB.prepare(`DELETE FROM confirmations WHERE assignment_id=?`).bind(id))}
+  for(const r of inserts)stmts.push(env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,0,0,0,0,?,?)`).bind(r[0],eventId,r[1],r[2],now,now));
+  for(let i=0;i<stmts.length;i+=90)await env.DB.batch(stmts.slice(i,i+90));
+  const spareLeft=d.volunteers.filter(v=>count[v.id]===0).length;
+  return json({ok:true,moved,changed:changes.size,added,spare_left:spareLeft});
 }
 async function generateSchedule(req:Request,env:Env,eventId:string){
   const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
@@ -1379,6 +1471,8 @@ export default {async fetch(request,env):Promise<Response>{
   if(srm&&request.method==='POST')return removeScheduleAssignments(request,env,decodeURIComponent(srm[1]));
   const sfo=p.match(/^\/api\/events\/([^/]+)\/schedule\/fill-open$/);
   if(sfo&&request.method==='POST')return fillOpenScheduleSlots(env,decodeURIComponent(sfo[1]));
+  const dsp=p.match(/^\/api\/events\/([^/]+)\/schedule\/distribute$/);
+  if(dsp&&request.method==='POST')return distributeSpare(request,env,decodeURIComponent(dsp[1]));
   const cin=p.match(/^\/api\/events\/([^/]+)\/check-in$/);
   if(cin&&request.method==='PUT')return setCheckIn(request,env,decodeURIComponent(cin[1]));
   const srb=p.match(/^\/api\/events\/([^/]+)\/schedule\/rebalance-new$/);

@@ -487,3 +487,31 @@ dialog>.dialog-head{padding:22px 22px 0}
 .shd-item small{display:block;color:var(--muted);font-weight:500;margin-top:2px}
 /* Availability search */
 .avail-search{max-width:340px;margin-bottom:10px}
+/* Availability by hours */
+.av-mode{max-width:360px;margin:6px 0 14px;grid-template-columns:1fr 1fr}
+.av-days{display:grid;gap:10px}
+.av-days.av-disabled{opacity:.45}
+.av-day{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:#fff}
+.av-day-head{margin-bottom:8px}
+.av-chips{display:flex;flex-wrap:wrap;gap:8px}
+.av-chip{display:inline-flex;align-items:center;cursor:pointer}
+.av-chip input{position:absolute;opacity:0;width:1px;height:1px}
+.av-chip span{padding:8px 14px;border:1px solid var(--line-strong);border-radius:999px;font-weight:750}
+.av-chip small{font-weight:500;color:var(--muted);margin-left:3px}
+.av-chip input:checked+span{background:var(--accent);border-color:var(--accent);color:#fff}
+.av-chip input:checked+span small{color:#d6eadf}
+.av-chip input:focus-visible+span{outline:2px solid #6ba58a;outline-offset:1px}
+.av-ranges{display:grid;gap:6px;margin-top:8px}
+.av-range{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.av-range input{width:auto;min-width:130px}
+.av-add{margin-top:6px;margin-left:-4px}
+.av-preview{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2)}
+.av-preview-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.av-preview-head .avail-search{margin:0;max-width:220px}
+.av-fit-list{display:grid;gap:3px;max-height:180px;overflow:auto}
+.av-fit{display:flex;justify-content:space-between;gap:10px;font-size:.88rem;padding:4px 2px;border-bottom:1px dashed #e3e8e5}
+.av-fit small{color:var(--muted);white-space:nowrap}
+/* Distribute dialog */
+.ds-tasks{display:grid;gap:6px;max-height:240px;overflow:auto}
+.ds-max{margin:12px 0 8px}
+.ds-note{font-size:.84rem;color:var(--muted);background:var(--surface-2);border-radius:10px;padding:10px 12px}
