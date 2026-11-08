@@ -454,3 +454,6 @@ dialog>.dialog-head{padding:22px 22px 0}
 .vol-search #search{flex:1 1 240px;max-width:420px}
 .vol-sort{display:flex;align-items:center;gap:8px;font-weight:700;font-size:.88rem;color:#405048;white-space:nowrap}
 .vol-sort select{width:auto}
+.extra-add{margin-top:2px}
+.extra-add .link-button{font-size:.84rem;padding:4px 2px}
+.extra-tag{color:#2b5797;background:#e8f0fb}
