@@ -450,3 +450,7 @@ dialog>.dialog-head{padding:22px 22px 0}
 @media(max-width:650px){.ci-filter{width:100%;grid-template-columns:repeat(3,1fr)}.ci-table th:nth-child(4),.ci-table td:nth-child(4),.ci-table th:nth-child(5),.ci-table td:nth-child(5){display:none}}
 .minor-check{color:#8a6510;font-weight:900;font-size:1.05rem}
 .be-minor{grid-template-columns:repeat(3,1fr)}
+.vol-search{display:flex;flex-wrap:wrap;align-items:center;gap:10px;flex:1 1 420px}
+.vol-search #search{flex:1 1 240px;max-width:420px}
+.vol-sort{display:flex;align-items:center;gap:8px;font-weight:700;font-size:.88rem;color:#405048;white-space:nowrap}
+.vol-sort select{width:auto}
