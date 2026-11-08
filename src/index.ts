@@ -1137,10 +1137,10 @@ async function sendScheduleEmails(request:Request,env:Env,eventId:string){
    link=`${origin}/confirm/${token}`;
   }
   const subject=kind==='Reminder'?`Reminder: Your volunteer schedule for ${event.name}`:`Your volunteer schedule for ${event.name}`;
-  const lines=v.assignments.map((a:any)=>`${a.date} · ${a.start_time}${a.end_time?'–'+a.end_time:''} · ${a.task_name}`).join('\n');
+  const lines=v.assignments.map((a:any)=>`${a.date} · ${fmt12(a.start_time)}${a.end_time?' – '+fmt12(a.end_time):''} · ${a.task_name}`).join('\n');
   const intro=kind==='Reminder'?`This is a reminder of your volunteer schedule for ${event.name}.`:`Your volunteer schedule for ${event.name}:`;
   const textBody=mode==='Link'?`Hello ${v.name},\n\n${intro}\n\n${lines}\n\nReview and confirm your assignments:\n${link}\n\nThank you.`:`Hello ${v.name},\n\n${intro}\n\n${lines}\n\nThank you.`;
-  const items=v.assignments.map((a:any)=>`<li><strong>${htmlEsc(a.task_name)}</strong> — ${htmlEsc(a.date)} · ${htmlEsc(a.start_time)}${a.end_time?'–'+htmlEsc(a.end_time):''}</li>`).join('');
+  const items=v.assignments.map((a:any)=>`<li><strong>${htmlEsc(a.task_name)}</strong> — ${htmlEsc(a.date)} · ${htmlEsc(fmt12(a.start_time))}${a.end_time?' – '+htmlEsc(fmt12(a.end_time)):''}</li>`).join('');
   const htmlBody=`<p>Hello ${htmlEsc(v.name)},</p><p>${htmlEsc(intro)}</p><ul>${items}</ul><p><a href="${htmlEsc(link)}">Review and confirm your assignments</a></p><p>Thank you.</p>`;
   try{const provider=mode==='Plain'?await gmailSendPlain(env,v.email,subject,textBody):await gmailSend(env,v.email,subject,textBody,htmlBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
   catch(e:any){await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Failed',null,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Failed',error:e?.message||'Send failed'})}
@@ -1158,7 +1158,7 @@ async function prepareScheduleSms(request:Request,env:Env,eventId:string){
  for(const v of Object.values(by) as any[]){
   if(selected&&!selected.has(v.id))continue;if(kind==='Reminder'&&!v.assignments.some((a:any)=>a.status==='Awaiting'))continue;if(!v.phone)continue;
   let link='';if(mode==='Link'){const token=tokenString(),hash=await tokenHash(token);await env.DB.prepare(`INSERT INTO confirmation_links(event_id,volunteer_id,token_hash,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(event_id,volunteer_id) DO UPDATE SET token_hash=excluded.token_hash,updated_at=excluded.updated_at`).bind(eventId,v.id,hash,now,now).run();link=`${origin}/confirm/${token}`}
-  const lines=v.assignments.map((a:any)=>`${a.date} ${a.start_time}${a.end_time?'-'+a.end_time:''} ${a.task_name}`).join('; ');
+  const lines=v.assignments.map((a:any)=>`${a.date} ${fmt12(a.start_time)}${a.end_time?'-'+fmt12(a.end_time):''} ${a.task_name}`).join('; ');
   const lead=kind==='Reminder'?`Reminder — ${event.name}:`:`${event.name}:`;
   const message=mode==='Link'?`${lead} ${lines}. Confirm: ${link}`:`${lead} ${lines}.`;
   messages.push({volunteer_id:v.id,name:v.name,phone:v.phone,message});
