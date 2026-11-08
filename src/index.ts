@@ -784,7 +784,7 @@ async function listSchedule(req:Request,env:Env,eventId:string){
   `).bind(eventId,clean(new URL(req.url).searchParams.get('department_id')),clean(new URL(req.url).searchParams.get('department_id'))).all<any>();
   const dep=clean(new URL(req.url).searchParams.get('department_id'));
   const sl=await env.DB.prepare(`
-   SELECT s.id slot_id,s.date,s.start_time,s.end_time,s.positions_needed,COALESCE(s.locked,0) slot_locked,t.name task_name,t.auto_schedule
+   SELECT s.id slot_id,s.date,s.start_time,s.end_time,s.positions_needed,COALESCE(s.locked,0) slot_locked,t.name task_name,t.auto_schedule,(SELECT group_concat(te.value,'|') FROM task_eligibility te WHERE te.task_id=t.id) eligibility
    FROM slots s JOIN tasks t ON t.id=s.task_id
    WHERE s.event_id=? AND t.active=1 AND (?='' OR t.department_id=?) ORDER BY s.date,s.start_time,t.name
   `).bind(eventId,dep,dep).all<any>();
