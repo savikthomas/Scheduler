@@ -554,3 +554,10 @@ dialog>.dialog-head{padding:22px 22px 0}
   .ci-table .tel-link{font-size:1rem}
 }
 @media(max-width:650px){.table-wrap .ci-table,.ci-table{min-width:0!important;width:100%!important}.ci-table tr{width:100%;box-sizing:border-box}}
+.confirm-type{display:grid;gap:6px;margin:4px 0 14px;text-align:left;font-size:.9rem}
+.confirm-type input{text-transform:uppercase;letter-spacing:.08em}
+.rename-cong{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.rename-cong summary{cursor:pointer;font-weight:700;color:var(--accent)}
+.rename-row{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto;gap:8px;align-items:center}
+@media(max-width:650px){.rename-row{grid-template-columns:1fr}}
+.ci-tabs{margin:0 0 12px}

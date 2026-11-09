@@ -241,6 +241,19 @@ async function eventCongregations(env:Env,eventId:string){
   const r=await env.DB.prepare(`SELECT name FROM (SELECT TRIM(congregation) name FROM volunteers WHERE event_id=? UNION SELECT TRIM(congregation_name) name FROM congregation_captains WHERE event_id=?) WHERE name IS NOT NULL AND name<>'' ORDER BY name COLLATE NOCASE`).bind(eventId,eventId).all<{name:string}>();
   return r.results.map(x=>x.name);
 }
+// Rename a congregation everywhere in the event (volunteers and captains).
+async function renameCongregation(req:Request,env:Env,eventId:string){
+  if(!await getEvent(env,eventId))return nf('Event not found');
+  const b=await body(req)||{},from=clean(b.from),to=clean(b.to);
+  if(!from||!to)return bad('Choose the congregation and enter its new name.');
+  if(to.length>80)return bad('Congregation name is too long');
+  const now=new Date().toISOString();
+  const [v,c]=await env.DB.batch([
+    env.DB.prepare(`UPDATE volunteers SET congregation=?,updated_at=? WHERE event_id=? AND lower(trim(congregation))=lower(?)`).bind(to,now,eventId,from),
+    env.DB.prepare(`UPDATE congregation_captains SET congregation_name=?,updated_at=? WHERE event_id=? AND lower(trim(congregation_name))=lower(?)`).bind(to,now,eventId,from)
+  ]);
+  return json({ok:true,volunteers:v.meta?.changes??0,captains:c.meta?.changes??0});
+}
 async function listVolunteers(req:Request,env:Env,eventId:string){
   const e=await getEvent(env,eventId); if(!e)return nf('Event not found');
   const u=new URL(req.url),q=clean(u.searchParams.get('q')),departmentId=clean(u.searchParams.get('department_id'));
@@ -1287,7 +1300,7 @@ async function deleteEventPerson(env:Env,eventId:string,id:string){
  const r=await env.DB.prepare(`DELETE FROM event_people WHERE id=? AND event_id=?`).bind(id,eventId).run();if(!r.meta.changes)return nf('Person not found');return json({ok:true});
 }
 async function deleteEvent(req:Request,env:Env,id:string){
- const e=await getEvent(env,id);if(!e)return nf('Event not found');const b=await body(req);if(!b)return bad('Invalid JSON');if(clean(b.confirm_name)!==e.name)return bad('Type the exact event name to permanently delete it.');
+ const e=await getEvent(env,id);if(!e)return nf('Event not found');const b=await body(req);if(!b)return bad('Invalid JSON');if(clean(b.confirm_name).toUpperCase()!=='DELETE'&&clean(b.confirm_name)!==e.name)return bad('Type DELETE to permanently delete this event.');
  await env.DB.prepare(`UPDATE departments SET committee_node_id=NULL WHERE event_id=?`).bind(id).run();await env.DB.prepare(`DELETE FROM events WHERE id=?`).bind(id).run();return json({ok:true,deleted:id});
 }
 
@@ -1312,7 +1325,7 @@ async function deleteDepartment(req:Request,env:Env,eventId:string,id:string){
  const d=await env.DB.prepare(`SELECT id,name FROM departments WHERE id=? AND event_id=?`).bind(id,eventId).first<{id:string,name:string}>();
  if(!d)return nf('Department not found');
  const b=await body(req);if(!b)return bad('Invalid JSON');
- if(clean(b.confirm_name)!==d.name)return bad('Type the exact department name to permanently delete it.');
+ if(clean(b.confirm_name).toUpperCase()!=='DELETE'&&clean(b.confirm_name)!==d.name)return bad('Type DELETE to permanently delete this department.');
  const count=await env.DB.prepare(`SELECT COUNT(*) c FROM departments WHERE event_id=?`).bind(eventId).first<{c:number}>();
  if(Number(count?.c||0)<=1)return bad('An event must have at least one department. Create another department before deleting this one.');
  const volunteerIds=await env.DB.prepare(`SELECT id FROM volunteers WHERE event_id=? AND department_id=?`).bind(eventId,id).all<{id:string}>();
@@ -1506,6 +1519,8 @@ export default {async fetch(request,env):Promise<Response>{
   if(srm&&request.method==='POST')return removeScheduleAssignments(request,env,decodeURIComponent(srm[1]));
   const sfo=p.match(/^\/api\/events\/([^/]+)\/schedule\/fill-open$/);
   if(sfo&&request.method==='POST')return fillOpenScheduleSlots(env,decodeURIComponent(sfo[1]));
+  const crn=p.match(/^\/api\/events\/([^/]+)\/congregations\/rename$/);
+  if(crn&&request.method==='POST')return renameCongregation(request,env,decodeURIComponent(crn[1]));
   const dsp=p.match(/^\/api\/events\/([^/]+)\/schedule\/distribute$/);
   if(dsp&&request.method==='POST')return distributeSpare(request,env,decodeURIComponent(dsp[1]));
   const cin=p.match(/^\/api\/events\/([^/]+)\/check-in$/);
