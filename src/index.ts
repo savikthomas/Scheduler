@@ -206,6 +206,19 @@ async function rolesFor(env:Env,ids:string[]){
 }
 // Adds the congregation/minor volunteer columns the first time the Worker runs
 // against a database that does not have them yet. Safe to run repeatedly.
+// One-time clean-up: reformat phone numbers saved before formatting existed to
+// (xxx) xxx-xxxx. Only phone values change; non-US numbers are left as they are.
+async function formatStoredPhonesOnce(env:Env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS app_meta(key TEXT PRIMARY KEY,value TEXT)`).run();
+  if(await env.DB.prepare(`SELECT 1 ok FROM app_meta WHERE key='phone_format_v1'`).first())return;
+  const stmts:D1PreparedStatement[]=[];
+  for(const table of ['volunteers','congregation_captains','event_people']){
+    const r=await env.DB.prepare(`SELECT id,phone FROM ${table} WHERE phone IS NOT NULL AND phone<>''`).all<{id:string,phone:string}>().catch(()=>({results:[] as {id:string,phone:string}[]}));
+    for(const x of r.results){const f=formatPhone(x.phone);if(f&&f!==x.phone)stmts.push(env.DB.prepare(`UPDATE ${table} SET phone=? WHERE id=?`).bind(f,x.id))}
+  }
+  for(let i=0;i<stmts.length;i+=90)await env.DB.batch(stmts.slice(i,i+90));
+  await env.DB.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('phone_format_v1',?)`).bind(new Date().toISOString()).run();
+}
 let volunteerColumnsReady:Promise<void>|null=null;
 function ensureVolunteerColumns(env:Env){
   if(!volunteerColumnsReady)volunteerColumnsReady=(async()=>{
@@ -216,6 +229,7 @@ function ensureVolunteerColumns(env:Env){
     if(!have.has('checked_in_at'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     await env.DB.prepare(`CREATE TABLE IF NOT EXISTS availability_windows(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,volunteer_id TEXT NOT NULL,date TEXT NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,created_at TEXT NOT NULL)`).run().catch(()=>{});
     await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_availability_windows_vol ON availability_windows(event_id,volunteer_id)`).run().catch(()=>{});
+    await formatStoredPhonesOnce(env);
     const cr=await env.DB.prepare(`PRAGMA table_info(congregation_captains)`).all<{name:string}>();
     if(cr.results.length&&!cr.results.some(x=>x.name==='checked_in_at'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();

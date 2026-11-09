@@ -447,7 +447,7 @@ dialog>.dialog-head{padding:22px 22px 0}
 .select-cell{width:36px}
 .select-cell input{width:auto}
 .checkin-summary{margin-bottom:12px}
-@media(max-width:650px){.ci-filter{width:100%;grid-template-columns:repeat(3,1fr)}.ci-table th:nth-child(4),.ci-table td:nth-child(4),.ci-table th:nth-child(5),.ci-table td:nth-child(5){display:none}}
+@media(max-width:650px){.ci-filter{width:100%;grid-template-columns:repeat(3,1fr)}.ci-table .ci-hide-sm{display:none}.ci-table td,.ci-table th{padding-left:8px;padding-right:8px}}
 .minor-check{color:#8a6510;font-weight:900;font-size:1.05rem}
 .be-minor{grid-template-columns:repeat(3,1fr)}
 .vol-search{display:flex;flex-wrap:wrap;align-items:center;gap:10px;flex:1 1 420px}
@@ -531,3 +531,26 @@ dialog>.dialog-head{padding:22px 22px 0}
 .count-row{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
 .sel-info{font-size:.88rem;font-weight:700;color:var(--accent)}
 .sel-info .link-button{font-size:.88rem;padding:0 2px}
+/* Tap-to-call phone links */
+.tel-link{color:var(--accent);font-weight:700;text-decoration:none;white-space:nowrap}
+.tel-link:hover{text-decoration:underline}
+.label-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.call-inline{font-size:.82rem}
+.call-inline::before{content:"📞 "}
+@media (hover:none){.tel-link{padding:4px 0;display:inline-block}}
+/* Check-In on phones: one compact card per person */
+@media(max-width:650px){
+  .ci-table thead{display:none}
+  .ci-table,.ci-table tbody{display:block;width:100%}
+  .ci-table tr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"sel name act" "sel phone act" "sel stat act";column-gap:8px;align-items:center;padding:10px 8px;border-bottom:1px solid var(--line)}
+  .ci-table td{border:0!important;padding:1px 0!important;background:transparent!important}
+  .ci-table tr.is-in{background:#f4faf6}
+  .ci-table .select-cell{grid-area:sel;width:auto}
+  .ci-table .ci-name{grid-area:name}
+  .ci-table .phone-cell{grid-area:phone}
+  .ci-table .ci-status{grid-area:stat;font-size:.84rem}
+  .ci-table .ci-action{grid-area:act}
+  .ci-table .ci-action button{min-width:84px;padding:10px 12px}
+  .ci-table .tel-link{font-size:1rem}
+}
+@media(max-width:650px){.table-wrap .ci-table,.ci-table{min-width:0!important;width:100%!important}.ci-table tr{width:100%;box-sizing:border-box}}
