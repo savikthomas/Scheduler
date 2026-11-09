@@ -1192,7 +1192,8 @@ function scheduleEmailContent(o:{kind:string,mode:string,first:string,eventName:
 }
 async function sendScheduleEmails(request:Request,env:Env,eventId:string){
  const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
- const b=await body(request)||{},kind=clean(b.kind)==='Reminder'?'Reminder':'Schedule',mode=clean(b.mode)==='Plain'?'Plain':'Link';
+ // Emails never include the confirmation link (spam filters), so they never create or replace links.
+ const b=await body(request)||{},kind=clean(b.kind)==='Reminder'?'Reminder':'Schedule',mode:string='Plain';
  const selected=Array.isArray(b.volunteer_ids)?new Set(b.volunteer_ids.map(clean).filter(Boolean)):null;
  await ensureConfirmationRows(env,eventId);
  const rows=await env.DB.prepare(`SELECT a.volunteer_id,v.first_name,v.last_name,v.email,v.department_id,s.date,s.start_time,s.end_time,t.name task_name,COALESCE(c.status,'Awaiting') status FROM assignments a JOIN volunteers v ON v.id=a.volunteer_id JOIN slots s ON s.id=a.slot_id JOIN tasks t ON t.id=s.task_id LEFT JOIN confirmations c ON c.assignment_id=a.id WHERE a.event_id=? ORDER BY v.last_name,v.first_name,s.date,s.start_time,t.name`).bind(eventId).all<any>();
