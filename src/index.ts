@@ -1173,14 +1173,33 @@ async function gmailSendPlain(env:Env,to:string,subject:string,textBody:string){
  const j=await r.json<any>();if(!r.ok)throw new Error(j?.error?.message||'Gmail rejected the message.');return String(j.id||'');
 }
 function htmlEsc(v:string){return v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c))}
+function eventDateText(start:string,end?:string|null){
+ const long=(d:string,o:Intl.DateTimeFormatOptions)=>{const x=new Date(d+'T12:00:00Z');return isNaN(+x)?d:x.toLocaleDateString('en-US',{...o,timeZone:'UTC'})};
+ if(!start)return '';if(!end||end===start)return long(start,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+ return `${long(start,{weekday:'long',month:'long',day:'numeric'})} – ${long(end,{weekday:'long',month:'long',day:'numeric',year:'numeric'})}`;
+}
+// Builds the schedule / reminder email. Always sent as plain text (better for spam filters).
+function scheduleEmailContent(o:{kind:string,mode:string,first:string,eventName:string,eventDate:string,department:string,assignments:any[],link:string}){
+ const dep=o.department.replace(/\s+department$/i,'').trim()||'Cleaning',depLower=dep.toLowerCase(),reminder=o.kind==='Reminder',withLink=o.mode==='Link'&&!!o.link;
+ const subject=reminder?`Reminder: Your ${depLower} schedule for ${o.eventName}`:`Your ${depLower} schedule for ${o.eventName}`;
+ const intro=`Thank you for volunteering to help with ${depLower} at the upcoming circuit assembly${o.eventDate?` on ${o.eventDate}`:''}. We sincerely appreciate your willingness to support this arrangement.`;
+ const lead=reminder?`As a friendly reminder, your assigned ${depLower} schedule is as follows:`:`Your assigned ${depLower} schedule is as follows:`;
+ const day=(d:string)=>{const x=new Date(d+'T12:00:00Z');return isNaN(+x)?d:x.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',timeZone:'UTC'})};
+ const time=(a:any)=>`${fmt12(a.start_time)}${a.end_time?' – '+fmt12(a.end_time):''}`;
+ const closing='If you have any questions, please feel free to reply to this email.',sign=['Your brothers,',`${dep} Department`];
+ const text=[`Dear ${o.first},`,'',intro,'',lead,'',...o.assignments.map((a:any)=>`  • ${day(a.date)}, ${time(a)} — ${a.task_name}`),'',...(withLink?['Please let us know whether you can serve at these times:',o.link,'']:[]),closing,'',...sign].join('\n');
+ return {subject,text};
+}
 async function sendScheduleEmails(request:Request,env:Env,eventId:string){
  const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
  const b=await body(request)||{},kind=clean(b.kind)==='Reminder'?'Reminder':'Schedule',mode=clean(b.mode)==='Plain'?'Plain':'Link';
  const selected=Array.isArray(b.volunteer_ids)?new Set(b.volunteer_ids.map(clean).filter(Boolean)):null;
  await ensureConfirmationRows(env,eventId);
- const rows=await env.DB.prepare(`SELECT a.volunteer_id,v.first_name,v.last_name,v.email,s.date,s.start_time,s.end_time,t.name task_name,COALESCE(c.status,'Awaiting') status FROM assignments a JOIN volunteers v ON v.id=a.volunteer_id JOIN slots s ON s.id=a.slot_id JOIN tasks t ON t.id=s.task_id LEFT JOIN confirmations c ON c.assignment_id=a.id WHERE a.event_id=? ORDER BY v.last_name,v.first_name,s.date,s.start_time,t.name`).bind(eventId).all<any>();
- const by:Record<string,any>={};for(const x of rows.results){if(!by[x.volunteer_id])by[x.volunteer_id]={id:x.volunteer_id,name:`${x.first_name} ${x.last_name}`.trim(),email:x.email||'',assignments:[]};by[x.volunteer_id].assignments.push(x)}
+ const rows=await env.DB.prepare(`SELECT a.volunteer_id,v.first_name,v.last_name,v.email,v.department_id,s.date,s.start_time,s.end_time,t.name task_name,COALESCE(c.status,'Awaiting') status FROM assignments a JOIN volunteers v ON v.id=a.volunteer_id JOIN slots s ON s.id=a.slot_id JOIN tasks t ON t.id=s.task_id LEFT JOIN confirmations c ON c.assignment_id=a.id WHERE a.event_id=? ORDER BY v.last_name,v.first_name,s.date,s.start_time,t.name`).bind(eventId).all<any>();
+ const by:Record<string,any>={};for(const x of rows.results){if(!by[x.volunteer_id])by[x.volunteer_id]={id:x.volunteer_id,name:`${x.first_name} ${x.last_name}`.trim(),first:String(x.first_name||'').trim(),department_id:x.department_id||'',email:x.email||'',assignments:[]};by[x.volunteer_id].assignments.push(x)}
  const origin=new URL(request.url).origin,now=new Date().toISOString(),results:any[]=[];
+ const deps=await env.DB.prepare(`SELECT id,name FROM departments WHERE event_id=?`).bind(eventId).all<any>();const depName=new Map(deps.results.map((d:any)=>[d.id,String(d.name||'').trim()]));
+ const eventDate=eventDateText(event.start_date,event.end_date);
  for(const v of Object.values(by) as any[]){
   if(selected&&!selected.has(v.id))continue;if(kind==='Reminder'&&!v.assignments.some((a:any)=>a.status==='Awaiting'))continue;
   if(!v.email){results.push({volunteer_id:v.id,name:v.name,status:'Skipped',error:'No email address'});continue}
@@ -1189,13 +1208,9 @@ async function sendScheduleEmails(request:Request,env:Env,eventId:string){
    const token=tokenString(),hash=await tokenHash(token);await env.DB.prepare(`INSERT INTO confirmation_links(event_id,volunteer_id,token_hash,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(event_id,volunteer_id) DO UPDATE SET token_hash=excluded.token_hash,updated_at=excluded.updated_at`).bind(eventId,v.id,hash,now,now).run();
    link=`${origin}/confirm/${token}`;
   }
-  const subject=kind==='Reminder'?`Reminder: Your volunteer schedule for ${event.name}`:`Your volunteer schedule for ${event.name}`;
-  const lines=v.assignments.map((a:any)=>`${a.date} · ${fmt12(a.start_time)}${a.end_time?' – '+fmt12(a.end_time):''} · ${a.task_name}`).join('\n');
-  const intro=kind==='Reminder'?`This is a reminder of your volunteer schedule for ${event.name}.`:`Your volunteer schedule for ${event.name}:`;
-  const textBody=mode==='Link'?`Hello ${v.name},\n\n${intro}\n\n${lines}\n\nReview and confirm your assignments:\n${link}\n\nThank you.`:`Hello ${v.name},\n\n${intro}\n\n${lines}\n\nThank you.`;
-  const items=v.assignments.map((a:any)=>`<li><strong>${htmlEsc(a.task_name)}</strong> — ${htmlEsc(a.date)} · ${htmlEsc(fmt12(a.start_time))}${a.end_time?' – '+htmlEsc(fmt12(a.end_time)):''}</li>`).join('');
-  const htmlBody=`<p>Hello ${htmlEsc(v.name)},</p><p>${htmlEsc(intro)}</p><ul>${items}</ul><p><a href="${htmlEsc(link)}">Review and confirm your assignments</a></p><p>Thank you.</p>`;
-  try{const provider=mode==='Plain'?await gmailSendPlain(env,v.email,subject,textBody):await gmailSend(env,v.email,subject,textBody,htmlBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
+  const mail=scheduleEmailContent({kind,mode,first:v.first||v.name,eventName:event.name,eventDate,department:depName.get(v.department_id)||'Cleaning',assignments:v.assignments,link});
+  const subject=mail.subject,textBody=mail.text;
+  try{const provider=await gmailSendPlain(env,v.email,subject,textBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
   catch(e:any){await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Failed',null,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Failed',error:e?.message||'Send failed'})}
  }
  return json({ok:true,kind,mode,sent:results.filter(x=>x.status==='Sent').length,failed:results.filter(x=>x.status==='Failed').length,skipped:results.filter(x=>x.status==='Skipped').length,results});
