@@ -561,3 +561,5 @@ dialog>.dialog-head{padding:22px 22px 0}
 .rename-row{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto;gap:8px;align-items:center}
 @media(max-width:650px){.rename-row{grid-template-columns:1fr}}
 .ci-tabs{margin:0 0 12px}
+.tools-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.count-row .vol-sort{margin-left:auto}

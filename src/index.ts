@@ -1102,7 +1102,7 @@ async function confirmationDashboard(env:Env,eventId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
   await ensureConfirmationRows(env,eventId);
   const r=await env.DB.prepare(`
-    SELECT a.id assignment_id,a.volunteer_id,v.first_name,v.last_name,v.email,v.phone,
+    SELECT a.id assignment_id,a.volunteer_id,v.first_name,v.last_name,v.email,v.phone,v.congregation,
            s.date,s.start_time,s.end_time,t.name task_name,
            COALESCE(c.status,'Awaiting') status,c.responded_at,c.note,
            CASE WHEN cl.token_hash IS NULL THEN 0 ELSE 1 END has_link,
@@ -1117,7 +1117,7 @@ async function confirmationDashboard(env:Env,eventId:string){
   `).bind(eventId).all<any>();
   const by:Record<string,any>={};
   for(const x of r.results){
-    if(!by[x.volunteer_id])by[x.volunteer_id]={volunteer_id:x.volunteer_id,volunteer_name:`${x.first_name} ${x.last_name}`.trim(),email:x.email||'',phone:x.phone||'',has_link:!!x.has_link,first_viewed_at:x.first_viewed_at||'',last_viewed_at:x.last_viewed_at||'',view_count:Number(x.view_count||0),assignments:[]};
+    if(!by[x.volunteer_id])by[x.volunteer_id]={volunteer_id:x.volunteer_id,volunteer_name:`${x.first_name} ${x.last_name}`.trim(),email:x.email||'',phone:x.phone||'',congregation:x.congregation||'',has_link:!!x.has_link,first_viewed_at:x.first_viewed_at||'',last_viewed_at:x.last_viewed_at||'',view_count:Number(x.view_count||0),assignments:[]};
     by[x.volunteer_id].assignments.push({assignment_id:x.assignment_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name,status:x.status,responded_at:x.responded_at||'',note:x.note||''});
   }
   const volunteers=Object.values(by).map((v:any)=>{
