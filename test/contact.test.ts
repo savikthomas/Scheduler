@@ -67,3 +67,15 @@ describe('scheduler behavior in source', () => {
     expect(home).not.toContain('Hello World');
   });
 });
+
+import { formatPhone } from '../src/contact';
+describe('phone formatting', () => {
+  it('formats US numbers as (xxx) xxx-xxxx however they are typed', () => {
+    for (const v of ['9515993371', '951.599.3371', '951-599-3371', '(951)599 3371', '+1 951 599 3371', '19515993371'])
+      expect(formatPhone(v)).toBe('(951) 599-3371');
+  });
+  it('keeps blank and non-US numbers as entered', () => {
+    expect(formatPhone('')).toBe('');
+    expect(formatPhone('+44 20 7946 0958')).toBe('+44 20 7946 0958');
+  });
+});

@@ -1,4 +1,4 @@
-import { emailFormatError, phoneFormatError } from './contact';
+import { emailFormatError, phoneFormatError, formatPhone } from './contact';
 
 type AppCode = 'ca' | 'rc' | 'sc';
 type Role = 'Overseer' | 'Assistant' | 'Keyman' | 'Captain';
@@ -233,7 +233,7 @@ async function listVolunteers(req:Request,env:Env,eventId:string){
   const like=`%${q}%`;
   const where=departmentId?'event_id=? AND department_id=?':'event_id=?', base=departmentId?[eventId,departmentId]:[eventId];
   const r=q
-    ? await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR family LIKE ? OR congregation LIKE ?) ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base,like,like,like,like,like,like).all<VolunteerRow>()
+    ? await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR family LIKE ? OR congregation LIKE ? OR (?<>'%%' AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),'(',''),')',''),'-',''),' ',''),'.',''),'+','') LIKE ?)) ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base,like,like,like,like,like,like,`%${q.replace(/\D/g,'')}%`,`%${q.replace(/\D/g,'')}%`).all<VolunteerRow>()
     : await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base).all<VolunteerRow>();
   const rm=await rolesFor(env,r.results.map(x=>x.id));
   return json({ok:true,volunteers:r.results.map(x=>({...x,minor:Number(x.minor||0),roles:rm[x.id]||[]})),congregations:await eventCongregations(env,eventId)});
@@ -248,7 +248,7 @@ function parseVolunteer(b:Record<string,unknown>){
   if(gender!=='Male'&&gender!=='Female')return {error:'Gender must be Male or Female'} as const;
   const emailError=emailFormatError(email); if(emailError)return {error:emailError} as const;
   const phoneError=phoneFormatError(phone); if(phoneError)return {error:phoneError} as const;
-  return {value:{first,last,gender,email,phone,family,active,roles,congregation,minor}} as const;
+  return {value:{first,last,gender,email,phone:formatPhone(phone),family,active,roles,congregation,minor}} as const;
 }
 async function createVolunteer(req:Request,env:Env,eventId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
@@ -1264,7 +1264,7 @@ async function listEventPeople(env:Env,eventId:string){
 }
 async function saveEventPerson(req:Request,env:Env,eventId:string,id=''){
  if(!await getEvent(env,eventId))return nf('Event not found');const b=await body(req);if(!b)return bad('Invalid JSON');
- const first=clean(b.first_name),last=clean(b.last_name),emailRaw=clean(b.email),phoneRaw=clean(b.phone);if(!first||!last)return bad('First and last name are required.');const emailError=emailFormatError(emailRaw);if(emailError)return bad(emailError);const phoneError=phoneFormatError(phoneRaw);if(phoneError)return bad(phoneError);const email=emailRaw||null,phone=phoneRaw||null;const now=new Date().toISOString();
+ const first=clean(b.first_name),last=clean(b.last_name),emailRaw=clean(b.email),phoneRaw=clean(b.phone);if(!first||!last)return bad('First and last name are required.');const emailError=emailFormatError(emailRaw);if(emailError)return bad(emailError);const phoneError=phoneFormatError(phoneRaw);if(phoneError)return bad(phoneError);const email=emailRaw||null,phone=formatPhone(phoneRaw)||null;const now=new Date().toISOString();
  if(id){const r=await env.DB.prepare(`UPDATE event_people SET first_name=?,last_name=?,email=?,phone=?,active=?,updated_at=? WHERE id=? AND event_id=?`).bind(first,last,email,phone,b.active===false?0:1,now,id,eventId).run();if(!r.meta.changes)return nf('Person not found');return json({ok:true,id});}
  id=crypto.randomUUID();await env.DB.prepare(`INSERT INTO event_people(id,event_id,first_name,last_name,email,phone,active,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)`).bind(id,eventId,first,last,email,phone,now,now).run();return json({ok:true,id},201);
 }
@@ -1353,7 +1353,7 @@ function parseCaptain(b:Record<string,unknown>){
   if(name.length>120||congregation.length>120)return {error:'Name and congregation must be 120 characters or less'} as const;
   const emailError=emailFormatError(email); if(emailError)return {error:emailError} as const;
   const phoneError=phoneFormatError(phone); if(phoneError)return {error:phoneError} as const;
-  return {value:{name,congregation,email:email||null,phone:phone||null}} as const;
+  return {value:{name,congregation,email:email||null,phone:formatPhone(phone)||null}} as const;
 }
 async function listCaptains(env:Env,eventId:string,departmentId:string){
   const gate=await cleaningDepartment(env,eventId,departmentId); if(!gate.ok)return gate.response;
