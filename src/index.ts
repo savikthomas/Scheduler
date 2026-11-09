@@ -1120,6 +1120,11 @@ async function confirmationDashboard(env:Env,eventId:string){
     if(!by[x.volunteer_id])by[x.volunteer_id]={volunteer_id:x.volunteer_id,volunteer_name:`${x.first_name} ${x.last_name}`.trim(),email:x.email||'',phone:x.phone||'',congregation:x.congregation||'',has_link:!!x.has_link,first_viewed_at:x.first_viewed_at||'',last_viewed_at:x.last_viewed_at||'',view_count:Number(x.view_count||0),assignments:[]};
     by[x.volunteer_id].assignments.push({assignment_id:x.assignment_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name,status:x.status,responded_at:x.responded_at||'',note:x.note||''});
   }
+  // Latest message per volunteer and channel, so the page can show who has been sent what.
+  const log=await env.DB.prepare(`SELECT volunteer_id,channel,kind,status,created_at FROM communication_log WHERE event_id=? ORDER BY created_at DESC`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
+  for(const c of log.results){const v=by[c.volunteer_id];if(!v)continue;const key=c.channel==='SMS'?'last_sms':'last_email';
+    if(!v[key])v[key]={kind:c.kind,status:c.status,at:c.created_at};
+    if(c.channel!=='SMS'&&c.status==='Sent'&&!v.last_email_sent)v.last_email_sent={kind:c.kind,at:c.created_at};}
   const volunteers=Object.values(by).map((v:any)=>{
     const s=v.assignments.map((a:any)=>a.status);
     v.overall_status=s.length&&s.every((x:string)=>x==='Accepted')?'Confirmed All':

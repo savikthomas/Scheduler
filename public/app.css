@@ -575,3 +575,8 @@ dialog>.dialog-head{padding:22px 22px 0}
 .comm-count{margin-left:auto;font-weight:700;font-size:.88rem}
 .comm-picker .communication-volunteer-list{margin-bottom:0}
 .communication-volunteer-list .checkline.hidden{display:none}
+.sent-line{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.sent-tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.78rem;font-weight:700;background:#e8f3ee;color:#1f5a40}
+.sent-tag.sms{background:#eaf0fb;color:#24477a}
+.sent-tag.failed{background:#fdecea;color:#9b2c22}
+.sent-tag.none{background:#f2f2ef;color:#6b7a72}
