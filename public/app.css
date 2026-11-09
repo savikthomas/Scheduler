@@ -580,3 +580,5 @@ dialog>.dialog-head{padding:22px 22px 0}
 .sent-tag.sms{background:#eaf0fb;color:#24477a}
 .sent-tag.failed{background:#fdecea;color:#9b2c22}
 .sent-tag.none{background:#f2f2ef;color:#6b7a72}
+.sent-error{flex-basis:100%;font-size:.8rem;color:#9b2c22}
+#notice-message{white-space:pre-line}

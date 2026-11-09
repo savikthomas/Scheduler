@@ -1121,9 +1121,9 @@ async function confirmationDashboard(env:Env,eventId:string){
     by[x.volunteer_id].assignments.push({assignment_id:x.assignment_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name,status:x.status,responded_at:x.responded_at||'',note:x.note||''});
   }
   // Latest message per volunteer and channel, so the page can show who has been sent what.
-  const log=await env.DB.prepare(`SELECT volunteer_id,channel,kind,status,created_at FROM communication_log WHERE event_id=? ORDER BY created_at DESC`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
+  const log=await env.DB.prepare(`SELECT volunteer_id,channel,kind,status,provider_id,created_at FROM communication_log WHERE event_id=? ORDER BY created_at DESC`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
   for(const c of log.results){const v=by[c.volunteer_id];if(!v)continue;const key=c.channel==='SMS'?'last_sms':'last_email';
-    if(!v[key])v[key]={kind:c.kind,status:c.status,at:c.created_at};
+    if(!v[key])v[key]={kind:c.kind,status:c.status,at:c.created_at,error:c.status==='Failed'?String(c.provider_id||''):''};
     if(c.channel!=='SMS'&&c.status==='Sent'&&!v.last_email_sent)v.last_email_sent={kind:c.kind,at:c.created_at};}
   const volunteers=Object.values(by).map((v:any)=>{
     const s=v.assignments.map((a:any)=>a.status);
@@ -1153,22 +1153,28 @@ function b64urlText(v:string){
  const bytes=new TextEncoder().encode(v);let raw='';for(const b of bytes)raw+=String.fromCharCode(b);return btoa(raw).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 function emailSafe(v:string){return v.replace(/[\r\n]+/g,' ').trim()}
+// RFC 2047: headers must be ASCII; encode the subject if it has characters like – or accents.
+function headerText(v:string){const t=emailSafe(v);return /^[\x20-\x7e]*$/.test(t)?t:`=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(t)))}?=`}
 async function gmailAccessToken(env:Env){
  if(!env.GMAIL_CLIENT_ID||!env.GMAIL_CLIENT_SECRET||!env.GMAIL_REFRESH_TOKEN)throw new Error('Gmail sender is not configured.');
  const form=new URLSearchParams({client_id:env.GMAIL_CLIENT_ID,client_secret:env.GMAIL_CLIENT_SECRET,refresh_token:env.GMAIL_REFRESH_TOKEN,grant_type:'refresh_token'});
  const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:form});
- const j=await r.json<any>();if(!r.ok||!j.access_token)throw new Error('Unable to authorize the configured Gmail sender.');return String(j.access_token);
+ const j=await r.json<any>().catch(()=>({}));
+ if(!r.ok||!j.access_token){const code=String(j?.error||''),desc=String(j?.error_description||'');
+  if(code==='invalid_grant')throw new Error(`Gmail sign-in has expired or was revoked (${desc||code}). The Gmail sender needs to be reconnected (new refresh token).`);
+  throw new Error(`Unable to authorize the Gmail sender${code?` (${code}${desc?': '+desc:''})`:''}.`)}
+ return String(j.access_token);
 }
 async function gmailSend(env:Env,to:string,subject:string,textBody:string,htmlBody:string){
  const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||'rccainv@gmail.com');
  const boundary='ourportal_'+crypto.randomUUID().replace(/-/g,'');
- const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${emailSafe(subject)}`,'MIME-Version: 1.0',`Content-Type: multipart/alternative; boundary="${boundary}"`,'',`--${boundary}`,'Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody,'',`--${boundary}`,'Content-Type: text/html; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',htmlBody,'',`--${boundary}--`].join('\r\n');
+ const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${headerText(subject)}`,'MIME-Version: 1.0',`Content-Type: multipart/alternative; boundary="${boundary}"`,'',`--${boundary}`,'Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody,'',`--${boundary}`,'Content-Type: text/html; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',htmlBody,'',`--${boundary}--`].join('\r\n');
  const r=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',{method:'POST',headers:{authorization:`Bearer ${access}`,'content-type':'application/json'},body:JSON.stringify({raw:b64urlText(mime)})});
  const j=await r.json<any>();if(!r.ok)throw new Error(j?.error?.message||'Gmail rejected the message.');return String(j.id||'');
 }
 async function gmailSendPlain(env:Env,to:string,subject:string,textBody:string){
  const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||'rccainv@gmail.com');
- const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${emailSafe(subject)}`,'MIME-Version: 1.0','Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody].join('\r\n');
+ const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${headerText(subject)}`,'MIME-Version: 1.0','Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody].join('\r\n');
  const r=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',{method:'POST',headers:{authorization:`Bearer ${access}`,'content-type':'application/json'},body:JSON.stringify({raw:b64urlText(mime)})});
  const j=await r.json<any>();if(!r.ok)throw new Error(j?.error?.message||'Gmail rejected the message.');return String(j.id||'');
 }
@@ -1212,7 +1218,7 @@ async function sendScheduleEmails(request:Request,env:Env,eventId:string){
   const mail=scheduleEmailContent({kind,mode,first:v.first||v.name,eventName:event.name,eventDate,department:depName.get(v.department_id)||'Cleaning',assignments:v.assignments,link});
   const subject=mail.subject,textBody=mail.text;
   try{const provider=await gmailSendPlain(env,v.email,subject,textBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
-  catch(e:any){await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Failed',null,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Failed',error:e?.message||'Send failed'})}
+  catch(e:any){await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Failed',String(e?.message||'Send failed').slice(0,300),now).run();results.push({volunteer_id:v.id,name:v.name,status:'Failed',error:e?.message||'Send failed'})}
  }
  return json({ok:true,kind,mode,sent:results.filter(x=>x.status==='Sent').length,failed:results.filter(x=>x.status==='Failed').length,skipped:results.filter(x=>x.status==='Skipped').length,results});
 }

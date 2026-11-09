@@ -483,7 +483,7 @@ const saveSort=(key,v)=>{try{localStorage.setItem(key,v)}catch{}};
 function fmtSentAt(iso){try{const d=new Date(iso);if(isNaN(d))return '';return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}catch{return ''}}
 const wasSent=v=>!!(v.last_email_sent||v.last_sms);
 function sentLine(v){const out=[];const kind=k=>String(k||'').startsWith('Reminder')?'Reminder':'Schedule';
- if(v.last_email&&v.last_email.status==='Failed')out.push(`<span class="sent-tag failed">✉ Email failed ${esc(fmtSentAt(v.last_email.at))}</span>`);
+ if(v.last_email&&v.last_email.status==='Failed')out.push(`<span class="sent-tag failed" title="${esc(v.last_email.error||'')}">✉ Email failed ${esc(fmtSentAt(v.last_email.at))}</span>${v.last_email.error?`<div class="sent-error">${esc(v.last_email.error)}</div>`:''}`);
  if(v.last_email_sent)out.push(`<span class="sent-tag">✉ ${kind(v.last_email_sent.kind)} emailed ${esc(fmtSentAt(v.last_email_sent.at))}</span>`);
  if(v.last_sms)out.push(`<span class="sent-tag sms">💬 ${kind(v.last_sms.kind)} SMS prepared ${esc(fmtSentAt(v.last_sms.at))}</span>`);
  return out.length?`<div class="sent-line">${out.join('')}</div>`:'<div class="sent-line"><span class="sent-tag none">Not sent yet</span></div>'}
@@ -698,7 +698,8 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    const detail=withLink?'Each volunteer receives only their own schedule and secure confirmation link.':'The email is sent as text/plain only, with schedule information and no confirmation link or HTML.';
    if(!await askConfirm({title,text,detail,ok:reminder?'Send Reminders':'Send Schedules'}))return;
    const id=reminder?'send-reminders':'send-schedules',b=section.querySelector('#'+id),old=b.textContent;b.disabled=true;b.textContent='Sending…';
-   try{const r=await api(`/api/events/${cfg.eventId}/schedule-email`,{method:'POST',body:JSON.stringify({kind,mode,volunteer_ids:eligible.map(v=>v.volunteer_id)})});showNotice(reminder?'Reminders Sent':'Schedule Emails Sent',`${r.sent} sent${r.failed?` · ${r.failed} failed`:''}${r.skipped?` · ${r.skipped} skipped`:''}.`,r.failed?'info':'success');await loadConfirmations()}catch(e){showNotice('Email Could Not Be Sent',e.message,'error')}finally{b.disabled=false;b.textContent=old}
+   try{const r=await api(`/api/events/${cfg.eventId}/schedule-email`,{method:'POST',body:JSON.stringify({kind,mode,volunteer_ids:eligible.map(v=>v.volunteer_id)})});{const fails=(r.results||[]).filter(x=>x.status==='Failed'),reasons=[...new Set(fails.map(x=>x.error||'Send failed'))];
+     showNotice(r.failed&&!r.sent?'Email Could Not Be Sent':reminder?'Reminders Sent':'Schedule Emails Sent',`${r.sent} sent${r.failed?` · ${r.failed} failed`:''}${r.skipped?` · ${r.skipped} skipped`:''}.${reasons.length?`\n\nReason: ${reasons.join(' | ')}${fails.length<=5?`\nFailed: ${fails.map(x=>x.name).join(', ')}`:''}`:''}`,r.failed?(r.sent?'info':'error'):'success')};await loadConfirmations()}catch(e){showNotice('Email Could Not Be Sent',e.message,'error')}finally{b.disabled=false;b.textContent=old}
  }
  async function prepareScheduleSms(kind,mode,volunteerIds,selection){
    const reminder=kind==='Reminder',selected=new Set(volunteerIds),eligible=confirmationData.filter(v=>selected.has(v.volunteer_id)&&v.phone&&(!reminder||selection==='Selected'||v.assignments.some(a=>a.status==='Awaiting')));if(!eligible.length){showNotice('No SMS Recipients','None of the selected volunteers have a phone number that can be used for this message.','info');return}
