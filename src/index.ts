@@ -10,7 +10,7 @@ interface EventRow {
 }
 interface Env {
   DB:D1Database;
-  GMAIL_CLIENT_ID?:string; GMAIL_CLIENT_SECRET?:string; GMAIL_REFRESH_TOKEN?:string; GMAIL_FROM?:string;
+  GMAIL_CLIENT_ID?:string; GMAIL_CLIENT_SECRET?:string; GMAIL_REFRESH_TOKEN?:string; GMAIL_FROM?:string; GMAIL_FROM_EMAIL?:string;
 }
 
 interface VolunteerRow {
@@ -1166,14 +1166,14 @@ async function gmailAccessToken(env:Env){
  return String(j.access_token);
 }
 async function gmailSend(env:Env,to:string,subject:string,textBody:string,htmlBody:string){
- const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||'rccainv@gmail.com');
+ const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||env.GMAIL_FROM_EMAIL||'rccainv@gmail.com');
  const boundary='ourportal_'+crypto.randomUUID().replace(/-/g,'');
  const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${headerText(subject)}`,'MIME-Version: 1.0',`Content-Type: multipart/alternative; boundary="${boundary}"`,'',`--${boundary}`,'Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody,'',`--${boundary}`,'Content-Type: text/html; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',htmlBody,'',`--${boundary}--`].join('\r\n');
  const r=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',{method:'POST',headers:{authorization:`Bearer ${access}`,'content-type':'application/json'},body:JSON.stringify({raw:b64urlText(mime)})});
  const j=await r.json<any>();if(!r.ok)throw new Error(j?.error?.message||'Gmail rejected the message.');return String(j.id||'');
 }
 async function gmailSendPlain(env:Env,to:string,subject:string,textBody:string){
- const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||'rccainv@gmail.com');
+ const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||env.GMAIL_FROM_EMAIL||'rccainv@gmail.com');
  const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${headerText(subject)}`,'MIME-Version: 1.0','Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody].join('\r\n');
  const r=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',{method:'POST',headers:{authorization:`Bearer ${access}`,'content-type':'application/json'},body:JSON.stringify({raw:b64urlText(mime)})});
  const j=await r.json<any>();if(!r.ok)throw new Error(j?.error?.message||'Gmail rejected the message.');return String(j.id||'');
