@@ -5,6 +5,8 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "ourportal-scheduler",
+	// Keep variables set in the Cloudflare dashboard when this code is deployed.
+	"keep_vars": true,
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-26",
 	"compatibility_flags": [
