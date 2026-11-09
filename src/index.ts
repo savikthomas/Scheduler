@@ -1149,6 +1149,9 @@ async function generateConfirmationLinks(request:Request,env:Env,eventId:string)
   if(stmts.length)await env.DB.batch(stmts);
   return json({ok:true,links});
 }
+// Base64 body keeps each paragraph on one long line, so mail apps wrap it to the screen
+// instead of breaking sentences at ~78 characters.
+function b64Lines(v:string){const bytes=new TextEncoder().encode(v);let bin='';for(let i=0;i<bytes.length;i++)bin+=String.fromCharCode(bytes[i]);return (btoa(bin).match(/.{1,76}/g)||[]).join('\r\n')}
 function b64urlText(v:string){
  const bytes=new TextEncoder().encode(v);let raw='';for(const b of bytes)raw+=String.fromCharCode(b);return btoa(raw).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
@@ -1174,7 +1177,7 @@ async function gmailSend(env:Env,to:string,subject:string,textBody:string,htmlBo
 }
 async function gmailSendPlain(env:Env,to:string,subject:string,textBody:string){
  const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||env.GMAIL_FROM_EMAIL||'rccainv@gmail.com');
- const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${headerText(subject)}`,'MIME-Version: 1.0','Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: 8bit','',textBody].join('\r\n');
+ const mime=[`From: ${from}`,`To: ${emailSafe(to)}`,`Subject: ${headerText(subject)}`,'MIME-Version: 1.0','Content-Type: text/plain; charset="UTF-8"','Content-Transfer-Encoding: base64','',b64Lines(textBody.replace(/\r?\n/g,'\r\n'))].join('\r\n');
  const r=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',{method:'POST',headers:{authorization:`Bearer ${access}`,'content-type':'application/json'},body:JSON.stringify({raw:b64urlText(mime)})});
  const j=await r.json<any>();if(!r.ok)throw new Error(j?.error?.message||'Gmail rejected the message.');return String(j.id||'');
 }
