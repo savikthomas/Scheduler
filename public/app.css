@@ -582,3 +582,23 @@ dialog>.dialog-head{padding:22px 22px 0}
 .sent-tag.none{background:#f2f2ef;color:#6b7a72}
 .sent-error{flex-basis:100%;font-size:.8rem;color:#9b2c22}
 #notice-text{white-space:pre-line}
+/* Volunteers: List / Shift Counts tabs */
+.vol-viewtabs{display:inline-flex;gap:4px;padding:4px;margin-bottom:14px;background:#eef2f0;border-radius:10px}
+.vol-viewtabs button{border:0;background:transparent;padding:8px 16px;border-radius:7px;font-weight:700;color:#4b5a53;cursor:pointer}
+.vol-viewtabs button.active{background:#fff;color:#1f5a40;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.count-summary{display:flex;flex-wrap:wrap;gap:8px 18px;margin:0 0 12px;font-size:.92rem;color:#4b5a53}
+.count-summary .warn strong{color:#a5521b}
+.count-table td.num,.count-table th.num{text-align:center;white-space:nowrap}
+.shift-n{display:inline-block;min-width:34px;padding:3px 10px;border-radius:999px;background:#e8f3ee;color:#1f5a40;font-weight:800}
+.shift-n.zero{background:#fbeee4;color:#a5521b}
+.shift-n.at{background:#eaf0fb;color:#24477a}
+.shift-n.over{background:#fdecea;color:#9b2c22}
+.lim-tag{font-size:.72rem;font-weight:800;text-transform:uppercase;color:#24477a}
+.lim-tag.over{color:#9b2c22}
+.count-shifts .pill{margin:2px 0}
+.count-filter{margin:0}
+.small{font-size:.78rem}
+.av-limit{margin:14px 0 4px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#fafbfa}
+.av-limit label{display:flex;align-items:center;gap:10px;font-weight:700;margin:0 0 6px}
+.av-limit input{width:120px}
+.limit-pill{background:#eaf0fb;color:#24477a}

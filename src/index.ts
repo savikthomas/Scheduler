@@ -227,6 +227,8 @@ function ensureVolunteerColumns(env:Env){
     if(!have.has('congregation'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN congregation TEXT`).run().catch(()=>{});
     if(!have.has('minor'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN minor INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
     if(!have.has('checked_in_at'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
+    // Most shifts automatic scheduling may give this volunteer (NULL = no limit).
+    if(!have.has('max_shifts'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN max_shifts INTEGER`).run().catch(()=>{});
     await env.DB.prepare(`CREATE TABLE IF NOT EXISTS availability_windows(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,volunteer_id TEXT NOT NULL,date TEXT NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,created_at TEXT NOT NULL)`).run().catch(()=>{});
     await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_availability_windows_vol ON availability_windows(event_id,volunteer_id)`).run().catch(()=>{});
     await formatStoredPhonesOnce(env);
@@ -498,6 +500,12 @@ async function saveVolunteerAvailability(req:Request,env:Env,eventId:string,volu
   const v=await env.DB.prepare(`SELECT id FROM volunteers WHERE id=? AND event_id=?`).bind(volunteerId,eventId).first();
   if(!v)return nf('Volunteer not found');
   const b=await body(req);
+  if(b&&'max_shifts' in b){
+    const raw=b.max_shifts,n=raw===null||raw===''||raw===undefined?null:Math.floor(Number(raw));
+    if(n!==null&&(!Number.isFinite(n)||n<0||n>200))return bad('Shift limit must be a whole number from 0 to 200, or blank for no limit.');
+    await env.DB.prepare(`UPDATE volunteers SET max_shifts=?,updated_at=? WHERE id=? AND event_id=?`).bind(n,new Date().toISOString(),volunteerId,eventId).run();
+    if(!Array.isArray(b.windows)&&!Array.isArray(b.slot_ids))return json({ok:true,max_shifts:n});
+  }
   if(b&&Array.isArray(b.windows)){
     const list:{date:string,start_time:string,end_time:string}[]=[];
     for(const w of b.windows.slice(0,100)){
@@ -529,7 +537,7 @@ async function saveVolunteerAvailability(req:Request,env:Env,eventId:string,volu
   return json({ok:true,mode:ids.length?'selected':'all',slot_ids:ids});
 }
 
-type SchedVolunteer={id:string,first_name:string,last_name:string,gender:string,family:string|null,created_at:string,department_id:string|null,assistant_area_id:string|null,minor:number,roles:string[]};
+type SchedVolunteer={id:string,first_name:string,last_name:string,gender:string,family:string|null,created_at:string,department_id:string|null,assistant_area_id:string|null,minor:number,max_shifts:number|null,roles:string[]};
 type SchedSlot={id:string,event_id:string,task_id:string,date:string,start_time:string,end_time:string|null,positions_needed:number,task_name:string,auto_schedule:number,department_id:string|null,assistant_area_id:string|null,eligibility:string[]};
 type SchedAssignment={id:string,event_id:string,slot_id:string,volunteer_id:string,locked:number,published:number,created_at:string,date?:string,start_time?:string,end_time?:string|null,task_name?:string};
 
@@ -600,7 +608,7 @@ function slotFitsWindows(slot:SchedSlot,all:SchedSlot[],list:{date:string,start_
   return mergeWindows(list.filter(w=>w.date===slot.date)).some(([ws,we])=>ws<=s&&e<=we);
 }
 async function schedulingData(env:Env,eventId:string,departmentId=''){
-  const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id,COALESCE(minor,0) minor FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
+  const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id,COALESCE(minor,0) minor,max_shifts FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
   const rr=await env.DB.prepare(`SELECT volunteer_id,role FROM volunteer_roles WHERE volunteer_id IN (SELECT id FROM volunteers WHERE event_id=? AND active=1)`).bind(eventId).all<any>();
   const roleMap:Record<string,string[]>={};for(const r of rr.results)(roleMap[r.volunteer_id]??=[]).push(r.role);
   const volunteers:SchedVolunteer[]=vr.results.filter((v:any)=>!departmentId||v.department_id===departmentId).map((v:any)=>({...v,roles:roleMap[v.id]||[]}));
@@ -619,7 +627,17 @@ async function schedulingData(env:Env,eventId:string,departmentId=''){
   for(const [vid,list] of Object.entries(wins))avail[vid]=new Set(slots.filter(sl=>slotFitsWindows(sl,slots,list)).map(sl=>sl.id));
   const xr=await env.DB.prepare(`SELECT volunteer_id,slot_id FROM schedule_exclusions WHERE event_id=?`).bind(eventId).all<any>();
   const excluded=new Set(xr.results.map((x:any)=>`${x.volunteer_id}|${x.slot_id}`));
-  const slotIds=new Set(slots.map(x=>x.id));return {volunteers,slots,assignments:(ar.results as SchedAssignment[]).filter(a=>!departmentId||slotIds.has(a.slot_id)),avail,excluded};
+  const slotIds=new Set(slots.map(x=>x.id)),inScope=(ar.results as SchedAssignment[]).filter(a=>!departmentId||slotIds.has(a.slot_id));
+  // Shifts a volunteer has outside the slots being scheduled (another department);
+  // they still count toward the volunteer's shift limit.
+  const outside:Record<string,number>={};for(const a of ar.results as SchedAssignment[])if(departmentId&&!slotIds.has(a.slot_id))outside[a.volunteer_id]=(outside[a.volunteer_id]||0)+1;
+  return {volunteers,slots,assignments:inScope,avail,excluded,outside};
+}
+// Shift limit: automatic scheduling never gives a volunteer more shifts than their
+// limit (set in Availability). No limit set = no cap.
+function underLimit(v:SchedVolunteer,count:number,d:{outside:Record<string,number>}){
+  if(v.max_shifts===null||v.max_shifts===undefined||(v.max_shifts as any)==='')return true;
+  return count+(d.outside[v.id]||0)<Number(v.max_shifts);
 }
 
 
@@ -687,7 +705,7 @@ function effectiveRange(x:{task_id?:string,date:string,start_time:string,end_tim
   return [start,next??start+60];
 }
 type UnfilledInfo={slot_id:string,task_name:string,date:string,start_time:string,end_time:string|null,missing:number,needed:number,reason:string};
-function unfilledReason(s:SchedSlot,d:{volunteers:SchedVolunteer[],avail:Record<string,Set<string>>,excluded:Set<string>},assigned:any[]){
+function unfilledReason(s:SchedSlot,d:{volunteers:SchedVolunteer[],avail:Record<string,Set<string>>,excluded:Set<string>,outside?:Record<string,number>,count?:Record<string,number>},assigned:any[]){
   const eligible=d.volunteers.filter(v=>allowsEligibility(v,s.eligibility)&&(!s.department_id||v.department_id===s.department_id)&&(!s.assistant_area_id||v.assistant_area_id===s.assistant_area_id));
   if(!eligible.length)return `No volunteers in this department meet the task's eligibility${s.eligibility.length?' ('+s.eligibility.join(', ')+')':''}.`;
   const auto=eligible.filter(v=>autoSchedulable(v,s));
@@ -696,6 +714,7 @@ function unfilledReason(s:SchedSlot,d:{volunteers:SchedVolunteer[],avail:Record<
   if(!available.length)return `None of the ${eligible.length} eligible volunteer(s) are available at this time.`;
   const free=available.filter(v=>!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id!==s.id&&slotOverlaps(s,a))&&!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id===s.id));
   if(!free.length)return `All ${available.length} available eligible volunteer(s) are already scheduled at this time.`;
+  if(d.count){const room=free.filter(v=>underLimit(v,d.count![v.id]||0,d as any));if(!room.length)return `The ${free.length} available eligible volunteer(s) have all reached their shift limit.`}
   return `The ${free.length} remaining volunteer(s) can't be paired with the people already in this slot (gender, family or minor rules).`;
 }
 function noteUnfilled(map:Map<string,UnfilledInfo>,s:SchedSlot,d:any,assigned:any[]){
@@ -723,6 +742,7 @@ async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,
     const near=assigned.filter(a=>{if(a.volunteer_id!==v.id||a.date!==s.date||a.slot_id===s.id)return false;const o=sm.get(a.slot_id);if(!o)return false;const [os,oe]=effectiveRange(o,d.slots);return ns<oe&&os<ne});
     if(near.length)issues.push(`${who} is already scheduled close to this time: ${near.map(slotLabel).join('; ')}. One of these shifts has no end time, so they may overlap.`);
   }
+  if(v.max_shifts!==null&&v.max_shifts!==undefined){const have=d.assignments.filter(a=>a.id!==ignoreAssignmentId&&a.volunteer_id===v.id).length;if(have>=Number(v.max_shifts))issues.push(`${who} already has ${have} shift${have===1?'':'s'} and their limit is ${v.max_shifts}.`)}
   const after=[...assigned,{slot_id:s.id,volunteer_id:v.id}],orphan=uncoveredMinor(s.id,after,vm);
   if(orphan)issues.push(orphan.id===v.id?`${who} is a minor. ${MINOR_RULE_TEXT}`:`This leaves ${orphan.first_name} ${orphan.last_name} (a minor) without an adult family member of the same gender in this shift.`);
   return issues.length?{ok:true,warning:issues.join('\n'),issues}:{ok:true};
@@ -754,7 +774,10 @@ async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assi
   await env.DB.prepare(`UPDATE assignments SET volunteer_id=?,updated_at=? WHERE id=? AND event_id=?`).bind(volunteerId,new Date().toISOString(),assignmentId,eventId).run();
   return json({ok:true});
 }
+const LOCKED_AUTO_MSG='The schedule is locked, so automatic changes are turned off. Make changes by hand, or unlock the schedule first.';
 async function fillOpenScheduleSlots(env:Env,eventId:string){
+  const ev=await getEvent(env,eventId);if(!ev)return nf('Event not found');
+  if(ev.schedule_locked_at)return bad(LOCKED_AUTO_MSG);
   const d=await schedulingData(env,eventId);
   if(!d.volunteers.length)return bad('Add at least one active volunteer.');
   const sm=new Map(d.slots.map(s=>[s.id,s])),vm=new Map(d.volunteers.map(v=>[v.id,v]));
@@ -779,11 +802,12 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
         if(!minorOk(v,s.id,assigned,vm))return false;
         if(!minorFamilyOk(v,s.id,assigned,vm))return false;
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
+        if(!underLimit(v,total[v.id],d))return false;
         return true;
       }).sort((a,b)=>(total[a.id]-total[b.id])||((taskCount[a.id][s.task_id]||0)-(taskCount[b.id][s.task_id]||0))||(Math.random()-.5));
-      if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,d,assigned);continue}
+      if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,{...d,count:total},assigned);continue}
       const v=candidates[0],id=crypto.randomUUID(),now=new Date().toISOString();
-      rows.push([id,eventId,s.id,v.id,1,0,0,0,now,now]);
+      rows.push([id,eventId,s.id,v.id,0,0,0,0,now,now]);
       assigned.push({id,slot_id:s.id,volunteer_id:v.id,date:s.date,start_time:s.start_time,end_time:s.end_time,task_name:s.task_name});
       total[v.id]++;taskCount[v.id][s.task_id]=(taskCount[v.id][s.task_id]||0)+1;
     }
@@ -794,10 +818,12 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
 
 async function rebalanceWithNewVolunteers(env:Env,eventId:string){
   const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
-  if(!event.schedule_locked_at)return bad('Lock the entire schedule before rebalancing new volunteers.');
+  if(event.schedule_locked_at)return bad(LOCKED_AUTO_MSG);
   const d=await schedulingData(env,eventId);
-  const newVolunteers=d.volunteers.filter(v=>v.created_at>event.schedule_locked_at!);
-  if(!newVolunteers.length)return json({ok:true,moved:0,new_volunteers:0,message:'No active volunteers have been added since the schedule was locked.'});
+  // "New" volunteers = active volunteers who don't have any shift yet.
+  const hasShift=new Set(d.assignments.map(a=>a.volunteer_id));
+  const newVolunteers=d.volunteers.filter(v=>!hasShift.has(v.id));
+  if(!newVolunteers.length)return json({ok:true,moved:0,new_volunteers:0,message:'Every active volunteer already has at least one shift.'});
   const sm=new Map(d.slots.map(s=>[s.id,s])),vm=new Map(d.volunteers.map(v=>[v.id,v]));
   const assigned:any[]=[];
   for(const a of d.assignments){const s=sm.get(a.slot_id);if(s)assigned.push({id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,date:s.date,start_time:s.start_time,end_time:s.end_time,task_name:s.task_name,locked:a.locked});}
@@ -814,7 +840,8 @@ async function rebalanceWithNewVolunteers(env:Env,eventId:string){
         .filter(a=>a.volunteer_id!==nv.id && (counts[a.volunteer_id]||0)>counts[nv.id]+1)
         .sort((a,b)=>(counts[b.volunteer_id]-counts[a.volunteer_id])||String(a.date).localeCompare(String(b.date))||String(a.start_time).localeCompare(String(b.start_time)));
       for(const a of donorAssignments){
-        const s=sm.get(a.slot_id);if(!s||Number((s as any).locked))continue;
+        const s=sm.get(a.slot_id);if(!s||Number((s as any).locked)||Number(a.locked))continue;
+        if(!underLimit(nv,counts[nv.id],d))continue;
         if(!allowsEligibility(nv,s.eligibility))continue;
         if(!autoSchedulable(nv,s))continue;
         if(d.avail[nv.id]&&!d.avail[nv.id].has(s.id))continue;
@@ -835,9 +862,9 @@ async function rebalanceWithNewVolunteers(env:Env,eventId:string){
   }
   if(changes.length){
     const now=new Date().toISOString();
-    await env.DB.batch(changes.map(c=>env.DB.prepare(`UPDATE assignments SET volunteer_id=?,updated_at=? WHERE id=? AND event_id=?`).bind(c.volunteer_id,now,c.id,eventId)));
+    await env.DB.batch(changes.map(c=>env.DB.prepare(`UPDATE assignments SET volunteer_id=?,updated_at=? WHERE id=? AND event_id=? AND locked=0`).bind(c.volunteer_id,now,c.id,eventId)));
   }
-  return json({ok:true,moved:changes.length,new_volunteers:newVolunteers.length,message:changes.length?`${changes.length} assignment(s) moved to volunteers added after the schedule was locked.`:'No eligible transfers would improve workload fairness.'});
+  return json({ok:true,moved:changes.length,new_volunteers:newVolunteers.length,message:changes.length?`${changes.length} shift(s) moved to volunteers who had none. Locked shifts were not changed.`:'No eligible transfers would improve workload fairness (locked shifts are never moved).'});
 }
 async function schedulePreflight(req:Request,env:Env,eventId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
@@ -883,7 +910,8 @@ async function setCheckIn(req:Request,env:Env,eventId:string){
 // scheduling rule (eligibility, roles, availability, pairing, minors, conflicts)
 // is respected.
 async function distributeSpare(req:Request,env:Env,eventId:string){
-  if(!await getEvent(env,eventId))return nf('Event not found');
+  const ev=await getEvent(env,eventId);if(!ev)return nf('Event not found');
+  if(ev.schedule_locked_at)return bad(LOCKED_AUTO_MSG);
   const b=await body(req)||{},departmentId=clean(b.department_id);
   const taskIds=new Set<string>(Array.isArray(b.task_ids)?b.task_ids.map(clean).filter(Boolean):[]);
   if(!taskIds.size)return bad('Select at least one task.');
@@ -905,7 +933,7 @@ async function distributeSpare(req:Request,env:Env,eventId:string){
       const donors=assigned.filter(a=>!a.locked&&target(sm.get(a.slot_id))&&a.volunteer_id!==t.id&&count[a.volunteer_id]>=count[t.id]+2).sort((a,b)=>count[b.volunteer_id]-count[a.volunteer_id]);
       for(const a of donors){
         const x=sm.get(a.slot_id)!,others=assigned.filter(o=>o.id!==a.id);
-        if(!fits(t,x,others))continue;
+        if(!underLimit(t,count[t.id],d)||!fits(t,x,others))continue;
         count[a.volunteer_id]--;count[t.id]++;a.volunteer_id=t.id;changes.set(a.id,t.id);moved++;did=true;break;
       }
       if(did)break;
@@ -917,7 +945,7 @@ async function distributeSpare(req:Request,env:Env,eventId:string){
   const slotsT=d.slots.filter(x=>target(x));
   for(const x of slotsT)extras[x.id]=Math.max(0,assigned.filter(a=>a.slot_id===x.id).length-x.positions_needed);
   let added=0;
-  if(maxExtra>0)for(const v of d.volunteers.filter(v=>count[v.id]===0).sort(()=>Math.random()-.5)){
+  if(maxExtra>0)for(const v of d.volunteers.filter(v=>count[v.id]===0&&underLimit(v,0,d)).sort(()=>Math.random()-.5)){
     const options=slotsT.filter(x=>extras[x.id]<maxExtra&&fits(v,x,assigned)).sort((a,b)=>extras[a.id]-extras[b.id]||a.date.localeCompare(b.date)||a.start_time.localeCompare(b.start_time));
     const x=options[0];if(!x)continue;
     const id=crypto.randomUUID();inserts.push([id,x.id,v.id]);assigned.push({id,slot_id:x.id,volunteer_id:v.id,locked:0,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name});extras[x.id]++;count[v.id]++;added++;
@@ -931,6 +959,7 @@ async function distributeSpare(req:Request,env:Env,eventId:string){
 }
 async function generateSchedule(req:Request,env:Env,eventId:string){
   const event=await getEvent(env,eventId);if(!event)return nf('Event not found');
+  if(event.schedule_locked_at)return bad(LOCKED_AUTO_MSG);
   const b=await body(req)||{},departmentId=clean(b.department_id);
   const d=await schedulingData(env,eventId,departmentId);
   if(!d.volunteers.length)return bad('Add at least one active volunteer before generating the schedule.');
@@ -977,13 +1006,14 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
         if(!minorOk(v,s.id,assigned,vm))return false;
         if(!minorFamilyOk(v,s.id,assigned,vm))return false;
         if(assigned.some(a=>a.volunteer_id===v.id&&slotOverlaps(s,a)))return false;
+        if(!underLimit(v,total[v.id],d))return false;
         return true;
       });
-      if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,d,assigned);continue;}
+      if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,{...d,count:total},assigned);continue;}
       const sb=band(s),closing=isClosing(s),left=need-p;
       // Children who could come along with this adult into this shift.
       const kidsFor=(v:SchedVolunteer)=>{if(Number(v.minor)||left<2||otherMinorFamilyIn(v,s.id,assigned,vm))return [] as SchedVolunteer[];const fam=famKey(v);if(!fam)return [];
-        return (minorsByFam[fam]||[]).filter(m=>m.gender===v.gender&&allowsEligibility(m,s.eligibility)&&(!s.department_id||m.department_id===s.department_id)&&(!s.assistant_area_id||m.assistant_area_id===s.assistant_area_id)&&!(d.avail[m.id]&&!d.avail[m.id].has(s.id))&&!d.excluded.has(`${m.id}|${s.id}`)&&!assigned.some(x=>x.volunteer_id===m.id&&(x.slot_id===s.id||slotOverlaps(s,x))))};
+        return (minorsByFam[fam]||[]).filter(m=>m.gender===v.gender&&allowsEligibility(m,s.eligibility)&&(!s.department_id||m.department_id===s.department_id)&&(!s.assistant_area_id||m.assistant_area_id===s.assistant_area_id)&&!(d.avail[m.id]&&!d.avail[m.id].has(s.id))&&!d.excluded.has(`${m.id}|${s.id}`)&&underLimit(m,total[m.id],d)&&!assigned.some(x=>x.volunteer_id===m.id&&(x.slot_id===s.id||slotOverlaps(s,x))))};
       candidates.sort((a,b)=>{
         const score=(v:SchedVolunteer)=>{
           // Weighted workload is the primary fairness measure. A closing/final
