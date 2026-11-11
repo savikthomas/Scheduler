@@ -527,7 +527,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    root.querySelectorAll('.section-nav button').forEach(b=>b.classList.remove('active'));root.querySelector('#nav-schedule').classList.add('active');
    section.innerHTML=`${depBanner()}<section class="schedule-top"><div><h2 class="section-title">Schedule</h2><div class="hint">Create and manage volunteer assignments. Eligibility, availability and conflict rules are enforced when assignments change.</div></div><div class="schedule-primary"><button class="primary" id="generate-sch">Generate Schedule</button></div></section>
    <div id="sch-lock" class="schedule-lock-state"></div>
-   <div class="schedule-toolbar"><button class="secondary" id="lock-sch">🔒 Lock Schedule</button><button class="secondary" id="fill-open">Fill Open Slots</button><button class="secondary" id="rebalance-new">Rebalance New Volunteers</button><button class="secondary" id="distribute">Distribute Spare Volunteers</button><button class="secondary" id="refresh-sch">Refresh</button><button class="secondary" id="print-sch">Open Printable Schedule</button><button class="danger-soft hidden" id="remove-selected">Remove Selected</button></div>
+   <div class="schedule-toolbar"><button class="secondary" id="lock-sch">🔒 Lock Schedule</button><button class="secondary" id="fill-open">Fill Open Slots</button><button class="secondary" id="rebalance-new">Rebalance New Volunteers</button><button class="secondary" id="distribute">Distribute Spare Volunteers</button><button class="secondary" id="refresh-sch">Refresh</button><button class="secondary" id="print-sch">Open Printable Schedule</button><span class="print-menu"><button class="secondary" id="print-sep" type="button" aria-haspopup="true">Print Separately ▾</button><span class="print-menu-list hidden" id="print-sep-list"><button type="button" data-part="women">Women's Bathroom</button><button type="button" data-part="men">Men's Bathroom</button><button type="button" data-part="other">All Other Tasks</button></span></span><button class="danger-soft hidden" id="remove-selected">Remove Selected</button></div>
    <div id="sch-msg" class="message"></div>
    <div class="schedule-view-tabs"><button class="schedule-view-tab active" id="view-board">Schedule Board</button><button class="schedule-view-tab" id="view-people">Volunteer Quick Reference</button><button class="schedule-view-tab" id="view-confirm">Confirmations</button></div>
    <div id="board-view"><div class="schedule-search-wrap"><input id="schedule-search" type="search" placeholder="Search volunteer name to see their schedule…" autocomplete="off"><button class="secondary hidden" id="clear-schedule-search">Clear</button></div><div id="schedule-search-status" class="muted"></div><div id="sch-summary" class="count"></div><div id="schedule-board"><div class="loading">Loading schedule…</div></div></div>
@@ -549,7 +549,11 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    section.querySelector('#distribute').onclick=openDistribute;
    section.querySelector('#fill-open').onclick=fillOpen;
    section.querySelector('#rebalance-new').onclick=rebalanceNew;
-   section.querySelector('#print-sch').onclick=openPrintableSchedule;
+   section.querySelector('#print-sch').onclick=()=>openPrintableSchedule();
+   {const btn=section.querySelector('#print-sep'),list=section.querySelector('#print-sep-list');
+    btn.onclick=e=>{e.stopPropagation();list.classList.toggle('hidden')};
+    list.querySelectorAll('button').forEach(b=>b.onclick=()=>{list.classList.add('hidden');openPrintableSchedule(b.dataset.part)});
+    document.addEventListener('click',e=>{if(!e.target.closest('.print-menu'))list.classList.add('hidden')})}
    section.querySelector('#remove-selected').onclick=removeSelected;
    section.querySelector('#view-board').onclick=()=>showScheduleView('board');
    section.querySelector('#view-people').onclick=()=>showScheduleView('people');
@@ -743,14 +747,23 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    const b=section.querySelector('#generate-links');b.disabled=true;b.textContent='Creating…';
    try{const r=await api(`/api/events/${cfg.eventId}/confirmation-links`,{method:'POST'});confirmationLinks={};(r.links||[]).forEach(x=>confirmationLinks[x.volunteer_id]=x.url);showNotice('Confirmation Links Created',`${r.links.length} secure volunteer link(s) created. You can copy them from the Confirmations tab.`,'success');await loadConfirmations()}catch(e){showNotice('Could Not Create Links',e.message,'error')}finally{b.disabled=false;b.textContent='Create / Refresh Links'}
  }
- function openPrintableSchedule(){
+ // Bathroom tasks for the separate prints. "Bathroom - Sisters" = women's, "Bathroom - Brothers" = men's.
+ // Combined tasks (names with "," or "&") are not counted as a bathroom.
+ const isBathTask=n=>/bathroom|restroom|washroom/i.test(n||'')&&!/[,&]/.test(n||'');
+ const isWomenBath=n=>isBathTask(n)&&/sister|women|woman|ladies|lady|female/i.test(n);
+ const isMenBath=n=>isBathTask(n)&&!isWomenBath(n)&&/brother|\bmen\b|\bmen'?s\b|\bman\b|\bmale\b|gentlem/i.test(n);
+ const PRINT_PARTS={women:{label:"Women's Bathroom",test:isWomenBath},men:{label:"Men's Bathroom",test:isMenBath},other:{label:'All Other Tasks',test:n=>!isWomenBath(n)&&!isMenBath(n)}};
+ function openPrintableSchedule(part){
    if(!currentSchedule.length){showNotice('No Schedule','Generate the schedule before opening the printable view.','error');return}
+   const P=part&&PRINT_PARTS[part];
+   const list=P?currentSchedule.filter(a=>P.test(a.task_name)):currentSchedule;
+   if(!list.length){const names=[...new Set(currentSchedule.map(a=>a.task_name))].sort().join(', ');showNotice('Nothing to Print',`No assignments found for ${P.label}. Tasks in this schedule: ${names}.`,'error');return}
    const w=window.open('','_blank');if(!w){showNotice('Pop-up Blocked','Allow pop-ups for this site, then try again.','error');return}
    const vmap=new Map(scheduleVolunteers.map(v=>[v.id,v]));
    const nameOf=a=>{const v=vmap.get(a.volunteer_id);return v?`${v.first_name} ${v.last_name}`.trim():'Volunteer'};
    // date -> task -> time slot -> names
    const days={};
-   currentSchedule.forEach(a=>{const t=((days[a.date]??={})[a.task_name]??={}),k=`${a.start_time}|${a.end_time||''}`;(t[k]??={start:a.start_time,end:a.end_time,names:[]}).names.push(nameOf(a))});
+   list.forEach(a=>{const t=((days[a.date]??={})[a.task_name]??={}),k=`${a.start_time}|${a.end_time||''}`;(t[k]??={start:a.start_time,end:a.end_time,names:[]}).names.push(nameOf(a))});
    const longDay=d=>{const x=new Date(d+'T12:00:00');return isNaN(x)?d:x.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})};
    const isBath=n=>/bathroom|restroom/i.test(n)&&!/[,&]/.test(n);
    const taskOrder=(a,b)=>(isBath(b)-isBath(a))||a.localeCompare(b,undefined,{sensitivity:'base',numeric:true});
@@ -758,13 +771,15 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
      return `<article class="task"><header><h3>${esc(task)}</h3><span>${rows.length} shift${rows.length===1?'':'s'} · ${people} volunteer${people===1?'':'s'}</span></header><table>${rows.map(r=>`<tr><th>${fmtClock(r.start)}${r.end?`<small>to ${fmtClock(r.end)}</small>`:''}</th><td>${r.names.sort((x,y)=>x.localeCompare(y)).map(n=>`<span class="nm">${esc(n)}</span>`).join('')}</td></tr>`).join('')}</table></article>`};
    const eventTitle=document.querySelector('h1')?.textContent?.trim()||'Volunteer Schedule';
    const dept=(typeof selectedDepartment!=='undefined'&&selectedDepartment?.name)?selectedDepartment.name:'';
-   const body=Object.keys(days).sort().map(date=>`<section class="day"><header class="day-head"><div><div class="kicker">${esc(eventTitle)}${dept?' · '+esc(dept):''}</div><h1>${esc(longDay(date))}</h1></div><div class="tip">Find your task, then your time.</div></header><div class="grid">${Object.keys(days[date]).sort(taskOrder).map(t=>card(t,days[date][t])).join('')}</div></section>`).join('');
+   const body=Object.keys(days).sort().map(date=>`<section class="day"><header class="day-head"><div><div class="kicker">${esc(eventTitle)}${dept?' · '+esc(dept):''}</div><h1>${esc(longDay(date))}</h1></div><div class="tip">${P?`<strong class="part">${esc(P.label)}</strong><br>`:''}Find your task, then your time.</div></header><div class="grid${Object.keys(days[date]).length===1?' one':''}">${Object.keys(days[date]).sort(taskOrder).map(t=>card(t,days[date][t])).join('')}</div></section>`).join('');
    const style=`*{box-sizing:border-box}body{margin:0;background:#e9eeec;color:#17231f;font-family:Arial,Helvetica,sans-serif}
 .bar{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 18px;background:#173f38;color:#fff;font-size:14px}.bar button{border:0;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer}
 .day{width:11in;max-width:calc(100% - 24px);margin:18px auto;padding:.4in;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.08)}
 .day-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;padding-bottom:8px;margin-bottom:12px;border-bottom:2px solid #173f38}
 .kicker{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#5d6d67;margin-bottom:3px}.day-head h1{margin:0;font-size:22px}.tip{font-size:10px;color:#5d6d67}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:start}
+.grid.one{grid-template-columns:1fr}.grid.one .task h3{font-size:16px}.grid.one .task th{width:110px;font-size:14px;padding:8px 10px}.grid.one .task th small{font-size:11px}.grid.one .task td{font-size:13px;padding:6px 10px 6px 0}.grid.one .nm{font-size:13px;padding:4px 10px}
+.tip .part{display:inline-block;margin-bottom:3px;padding:3px 10px;border-radius:999px;background:#173f38;color:#fff;font-size:12px;letter-spacing:.02em;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .task{border:1px solid #c9d5d0;border-radius:8px;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
 .task header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:6px 10px;background:#eef4f1;border-bottom:1px solid #c9d5d0}.task h3{margin:0;font-size:13px}.task header span{font-size:9px;color:#5d6d67;white-space:nowrap}
 .task table{width:100%;border-collapse:collapse}.task tr+tr th,.task tr+tr td{border-top:1px solid #e3eae7}
@@ -772,7 +787,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
 .task td{padding:4px 8px 4px 0;font-size:11px;line-height:1.25}.nm{display:inline-block;margin:1px 3px 1px 0;padding:2px 7px;border:1px solid #d3dde9;border-radius:999px;background:#f3f6fb;font-weight:700;font-size:10px}
 @media print{@page{size:letter landscape;margin:.35in}body{background:#fff}.bar{display:none}.day{width:auto;max-width:none;margin:0;padding:0;box-shadow:none}.day+.day{break-before:page;page-break-before:always}.task header,.nm{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 @media screen and (max-width:760px){.day{padding:14px}.grid{grid-template-columns:1fr}}`;
-   w.document.open();w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(eventTitle)} - Schedule</title><style>${style}</style></head><body><div class="bar"><strong>${esc(eventTitle)}${dept?' · '+esc(dept):''} — Printable Schedule</strong><button onclick="window.print()">Print Schedule</button></div>${body||'<section class="day">No assignments.</section>'}</body></html>`);w.document.close();
+   w.document.open();w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(eventTitle)} - ${P?esc(P.label):'Schedule'}</title><style>${style}</style></head><body><div class="bar"><strong>${esc(eventTitle)}${dept?' · '+esc(dept):''} — ${P?esc(P.label):'Printable Schedule'}</strong><button onclick="window.print()">Print Schedule</button></div>${body||'<section class="day">No assignments.</section>'}</body></html>`);w.document.close();
  }
  function openDistribute(){if(scheduleLocked){showNotice('Schedule Is Locked','A locked schedule can only be changed by hand. Unlock the schedule first to use the automatic tools.','error');return}const dsd=root.querySelector('#dsd'),box=root.querySelector('#ds-tasks');
    const tasks=new Map();currentSlots.forEach(x=>{if(!x.task_id)return;const t=tasks.get(x.task_id)||{name:x.task_name,shifts:0};t.shifts++;tasks.set(x.task_id,t)});
