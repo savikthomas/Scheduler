@@ -607,3 +607,9 @@ dialog>.dialog-head{padding:22px 22px 0}
 .print-menu-list.hidden{display:none}
 .print-menu-list button{border:0;background:transparent;text-align:left;padding:9px 12px;border-radius:7px;font-weight:600;cursor:pointer;color:#1d2b24}
 .print-menu-list button:hover{background:#eef4f1}
+.na-pill{background:#fdecea;color:#9b2c22;font-weight:700}
+.av-none-note{margin:10px 0;padding:10px 14px;border-radius:10px;background:#fdecea;color:#7a241c;font-size:.92rem}
+.av-limit.av-disabled{opacity:.45;pointer-events:none}
+.av-mode{max-width:520px;grid-template-columns:repeat(3,1fr)}
+.av-mode .av-none-opt input:checked+span{background:#9b2c22}
+@media (max-width:520px){.av-mode{grid-template-columns:1fr}}

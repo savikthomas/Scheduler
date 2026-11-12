@@ -229,6 +229,8 @@ function ensureVolunteerColumns(env:Env){
     if(!have.has('checked_in_at'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     // Most shifts automatic scheduling may give this volunteer (NULL = no limit).
     if(!have.has('max_shifts'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN max_shifts INTEGER`).run().catch(()=>{});
+    // Marked "Not available": never used by automatic scheduling.
+    if(!have.has('unavailable'))await env.DB.prepare(`ALTER TABLE volunteers ADD COLUMN unavailable INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
     await env.DB.prepare(`CREATE TABLE IF NOT EXISTS availability_windows(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,volunteer_id TEXT NOT NULL,date TEXT NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,created_at TEXT NOT NULL)`).run().catch(()=>{});
     await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_availability_windows_vol ON availability_windows(event_id,volunteer_id)`).run().catch(()=>{});
     await formatStoredPhonesOnce(env);
@@ -500,6 +502,10 @@ async function saveVolunteerAvailability(req:Request,env:Env,eventId:string,volu
   const v=await env.DB.prepare(`SELECT id FROM volunteers WHERE id=? AND event_id=?`).bind(volunteerId,eventId).first();
   if(!v)return nf('Volunteer not found');
   const b=await body(req);
+  if(b&&'unavailable' in b){
+    await env.DB.prepare(`UPDATE volunteers SET unavailable=?,updated_at=? WHERE id=? AND event_id=?`).bind(b.unavailable?1:0,new Date().toISOString(),volunteerId,eventId).run();
+    if(!('max_shifts' in b)&&!Array.isArray(b.windows)&&!Array.isArray(b.slot_ids))return json({ok:true,unavailable:!!b.unavailable});
+  }
   if(b&&'max_shifts' in b){
     const raw=b.max_shifts,n=raw===null||raw===''||raw===undefined?null:Math.floor(Number(raw));
     if(n!==null&&(!Number.isFinite(n)||n<0||n>200))return bad('Shift limit must be a whole number from 0 to 200, or blank for no limit.');
@@ -537,7 +543,7 @@ async function saveVolunteerAvailability(req:Request,env:Env,eventId:string,volu
   return json({ok:true,mode:ids.length?'selected':'all',slot_ids:ids});
 }
 
-type SchedVolunteer={id:string,first_name:string,last_name:string,gender:string,family:string|null,created_at:string,department_id:string|null,assistant_area_id:string|null,minor:number,max_shifts:number|null,roles:string[]};
+type SchedVolunteer={id:string,first_name:string,last_name:string,gender:string,family:string|null,created_at:string,department_id:string|null,assistant_area_id:string|null,minor:number,max_shifts:number|null,unavailable:number,roles:string[]};
 type SchedSlot={id:string,event_id:string,task_id:string,date:string,start_time:string,end_time:string|null,positions_needed:number,task_name:string,auto_schedule:number,department_id:string|null,assistant_area_id:string|null,eligibility:string[]};
 type SchedAssignment={id:string,event_id:string,slot_id:string,volunteer_id:string,locked:number,published:number,created_at:string,date?:string,start_time?:string,end_time?:string|null,task_name?:string};
 
@@ -560,6 +566,7 @@ function allowsEligibility(v:SchedVolunteer,values:string[]){
 // still be assigned by hand), unless the task itself asks for one of their roles.
 const LEADER_ROLES=['Overseer','Assistant','Keyman'];
 function autoSchedulable(v:SchedVolunteer,s:SchedSlot){
+  if(Number(v.unavailable))return false;
   const mine=v.roles.filter(r=>LEADER_ROLES.includes(r));
   return !mine.length||mine.some(r=>s.eligibility.includes(r));
 }
@@ -608,7 +615,7 @@ function slotFitsWindows(slot:SchedSlot,all:SchedSlot[],list:{date:string,start_
   return mergeWindows(list.filter(w=>w.date===slot.date)).some(([ws,we])=>ws<=s&&e<=we);
 }
 async function schedulingData(env:Env,eventId:string,departmentId=''){
-  const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id,COALESCE(minor,0) minor,max_shifts FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
+  const vr=await env.DB.prepare(`SELECT id,first_name,last_name,gender,family,created_at,department_id,assistant_area_id,COALESCE(minor,0) minor,max_shifts,COALESCE(unavailable,0) unavailable FROM volunteers WHERE event_id=? AND active=1`).bind(eventId).all<any>();
   const rr=await env.DB.prepare(`SELECT volunteer_id,role FROM volunteer_roles WHERE volunteer_id IN (SELECT id FROM volunteers WHERE event_id=? AND active=1)`).bind(eventId).all<any>();
   const roleMap:Record<string,string[]>={};for(const r of rr.results)(roleMap[r.volunteer_id]??=[]).push(r.role);
   const volunteers:SchedVolunteer[]=vr.results.filter((v:any)=>!departmentId||v.department_id===departmentId).map((v:any)=>({...v,roles:roleMap[v.id]||[]}));
@@ -709,7 +716,7 @@ function unfilledReason(s:SchedSlot,d:{volunteers:SchedVolunteer[],avail:Record<
   const eligible=d.volunteers.filter(v=>allowsEligibility(v,s.eligibility)&&(!s.department_id||v.department_id===s.department_id)&&(!s.assistant_area_id||v.assistant_area_id===s.assistant_area_id));
   if(!eligible.length)return `No volunteers in this department meet the task's eligibility${s.eligibility.length?' ('+s.eligibility.join(', ')+')':''}.`;
   const auto=eligible.filter(v=>autoSchedulable(v,s));
-  if(!auto.length)return `All ${eligible.length} eligible volunteer(s) are Overseers, Assistants or Keymen, who are only assigned by hand.`;
+  if(!auto.length){const na=eligible.filter(v=>Number(v.unavailable)).length;return na===eligible.length?`All ${eligible.length} eligible volunteer(s) are marked Not available.`:`All ${eligible.length} eligible volunteer(s) are Overseers, Assistants or Keymen (assigned only by hand)${na?` or marked Not available`:''}.`}
   const available=auto.filter(v=>!(d.avail[v.id]&&!d.avail[v.id].has(s.id))&&!d.excluded.has(`${v.id}|${s.id}`));
   if(!available.length)return `None of the ${eligible.length} eligible volunteer(s) are available at this time.`;
   const free=available.filter(v=>!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id!==s.id&&slotOverlaps(s,a))&&!assigned.some(a=>a.volunteer_id===v.id&&a.slot_id===s.id));
@@ -731,6 +738,7 @@ async function validateAssignmentCandidate(env:Env,eventId:string,slotId:string,
   if(!allowsEligibility(v,s.eligibility))issues.push(`${who} does not meet this task's requirements (${s.eligibility.join(', ')}).`);
   if(s.department_id&&v.department_id!==s.department_id)issues.push(`${who} belongs to a different department.`);
   if(s.assistant_area_id&&v.assistant_area_id!==s.assistant_area_id)issues.push(`${who} belongs to a different Assistant area.`);
+  if(Number(v.unavailable))issues.push(`${who} is marked Not available for this event.`);
   if(d.avail[v.id]&&!d.avail[v.id].has(s.id))issues.push(`${who} did not mark this time as available.`);
   const sm=new Map(d.slots.map(x=>[x.id,x])),vm=new Map(d.volunteers.map(x=>[x.id,x]));
   const assigned=d.assignments.filter(a=>a.id!==ignoreAssignmentId).map(a=>{const x=sm.get(a.slot_id);return x?{id:a.id,slot_id:a.slot_id,volunteer_id:a.volunteer_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name}:null}).filter(Boolean) as any[];
@@ -1013,7 +1021,7 @@ async function generateSchedule(req:Request,env:Env,eventId:string){
       const sb=band(s),closing=isClosing(s),left=need-p;
       // Children who could come along with this adult into this shift.
       const kidsFor=(v:SchedVolunteer)=>{if(Number(v.minor)||left<2||otherMinorFamilyIn(v,s.id,assigned,vm))return [] as SchedVolunteer[];const fam=famKey(v);if(!fam)return [];
-        return (minorsByFam[fam]||[]).filter(m=>m.gender===v.gender&&allowsEligibility(m,s.eligibility)&&(!s.department_id||m.department_id===s.department_id)&&(!s.assistant_area_id||m.assistant_area_id===s.assistant_area_id)&&!(d.avail[m.id]&&!d.avail[m.id].has(s.id))&&!d.excluded.has(`${m.id}|${s.id}`)&&underLimit(m,total[m.id],d)&&!assigned.some(x=>x.volunteer_id===m.id&&(x.slot_id===s.id||slotOverlaps(s,x))))};
+        return (minorsByFam[fam]||[]).filter(m=>m.gender===v.gender&&allowsEligibility(m,s.eligibility)&&(!s.department_id||m.department_id===s.department_id)&&(!s.assistant_area_id||m.assistant_area_id===s.assistant_area_id)&&!(d.avail[m.id]&&!d.avail[m.id].has(s.id))&&!d.excluded.has(`${m.id}|${s.id}`)&&underLimit(m,total[m.id],d)&&!Number(m.unavailable)&&!assigned.some(x=>x.volunteer_id===m.id&&(x.slot_id===s.id||slotOverlaps(s,x))))};
       candidates.sort((a,b)=>{
         const score=(v:SchedVolunteer)=>{
           // Weighted workload is the primary fairness measure. A closing/final
