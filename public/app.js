@@ -100,7 +100,7 @@ async function renderWorkspace(){
     ${rowsData.length?`<div class="table-wrap"><table class="count-table"><thead><tr><th>Volunteer</th><th>Congregation</th><th class="num">Shifts</th><th class="num">Limit</th><th>Shifts assigned</th></tr></thead><tbody>${rowsData.map(r=>{const mine=(per[r.v.id]||[]).slice().sort((a,b)=>a.date.localeCompare(b.date)||a.start_time.localeCompare(b.start_time));
       return `<tr data-name="${esc((r.v.first_name+' '+r.v.last_name+' '+(r.v.congregation||'')).toLowerCase())}" data-n="${r.n}"><td><strong>${esc(r.v.first_name+' '+r.v.last_name)}</strong>${r.v.minor?' <span class="pill minor-pill">Minor</span>':''}${Number(r.v.unavailable)?' <span class="pill na-pill">Not available</span>':''}<br><span class="muted">${esc(r.v.gender||'')}</span></td><td>${esc(r.v.congregation||'')}</td><td class="num"><span class="shift-n ${r.n?'':'zero'} ${r.status}">${r.n}</span>${r.locked?`<div class="muted small">${r.locked} locked</div>`:''}</td><td class="num">${r.lim===null?'<span class="muted">—</span>':`${r.lim}${r.status==='over'?' <span class="lim-tag over">over</span>':r.status==='at'?' <span class="lim-tag">full</span>':''}`}</td><td class="count-shifts">${mine.length?mine.map(a=>`<span class="pill">${esc(a.task_name)} · ${esc(avDay(a.date))} ${fmtClock(a.start_time)}</span>`).join(' '):'<span class="muted">None</span>'}</td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">No active volunteers.</div>'}`;
    const ss=host.querySelector('#count-sort');ss.value=sortKey;ss.onchange=()=>{saveSort('ourportal.countSort',ss.value);showShiftCounts()};
-   const filt=()=>{const t=host.querySelector('#count-search').value.trim().toLowerCase(),only=host.querySelector('#count-none').checked;host.querySelectorAll('tbody tr').forEach(r=>r.classList.toggle('hidden',(!!t&&!r.dataset.name.includes(t))||(only&&r.dataset.n!=='0')))};
+   const filt=()=>{const t=host.querySelector('#count-search').value.trim().toLowerCase(),only=host.querySelector('#count-none').checked;host.querySelectorAll('tbody tr').forEach(r=>r.classList.toggle('hidden',(!!t&&!matchWords(r.dataset.name,t))||(only&&r.dataset.n!=='0')))};
    host.querySelector('#count-search').oninput=filt;host.querySelector('#count-none').onchange=filt;
   }catch(e){host.innerHTML=`<div class="empty error-box">${esc(e.message)}</div>`}}
  function draw(){items.sort(sorters[vSort]||sorters.family);root.querySelector('#count').textContent=`${items.length} volunteer${items.length===1?'':'s'}`;selUi();box.innerHTML=items.length?`<div class="table-wrap"><table><thead><tr><th><input id="all" type="checkbox"></th><th>Name</th><th>Gender</th><th class="minor-col">Minor</th><th>Congregation</th><th>Email</th><th>Phone</th><th>Roles</th><th>Status</th></tr></thead><tbody>${items.map(v=>`<tr><td><input class="pick" type="checkbox" data-id="${v.id}" ${selected.has(v.id)?'checked':''}></td><td><strong>${esc(v.first_name)} ${esc(v.last_name)}</strong>${v.minor?' <span class="pill minor-pill">Minor</span>':''}</td><td>${esc(v.gender)}</td><td class="minor-col">${v.minor?'<span class="minor-check" title="Minor">✓</span>':''}</td><td>${esc(v.congregation||'')}</td><td class="email-cell">${esc(v.email||'')}</td><td class="phone-cell">${telLink(v.phone)}</td><td>${(v.roles||[]).map(r=>`<span class="pill">${esc(r)}</span>`).join(' ')}</td><td>${!v.active?'<span class="muted">Inactive</span>':Number(v.unavailable)?'<span class="pill na-pill">Not available</span>':'<span class="good">Active</span>'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty"><h3>No volunteers</h3><p>Add a volunteer or use Bulk Add.</p></div>';
@@ -308,7 +308,7 @@ async function renderWorkspace(){
   const sorter=(name,cong)=>{const m=section.querySelector('#ci-sort').value;return (a,b)=>{const ia=!!a.checked_in_at,ib=!!b.checked_in_at,byName=name(a).localeCompare(name(b),undefined,{sensitivity:'base'});
     if(m==='out-first')return (ia-ib)||byName; if(m==='in-first')return (ib-ia)||byName; if(m==='cong')return (cong(a)||'~').localeCompare(cong(b)||'~',undefined,{sensitivity:'base'})||byName;
     if(m==='time')return (ib-ia)||String(b.checked_in_at||'').localeCompare(String(a.checked_in_at||''))||byName; return byName}};
-  const pass=(x,text)=>{const f=filterVal();if(f==='in'&&!x.checked_in_at)return false;if(f==='out'&&x.checked_in_at)return false;const s=q();return !s||text.toLowerCase().includes(s)};
+  const pass=(x,text)=>{const f=filterVal();if(f==='in'&&!x.checked_in_at)return false;if(f==='out'&&x.checked_in_at)return false;const s=q();return !s||matchWords(text,s)};
   const visVols=()=>vols.filter(v=>pass(v,`${nm(v)} ${v.congregation||''} ${v.phone||''} ${String(v.phone||'').replace(/\D/g,'')} ${v.email||''}`)).sort(sorter(nm,v=>v.congregation));
   const visCaps=()=>caps.filter(c=>pass(c,`${c.name} ${c.congregation_name||''} ${c.phone||''} ${c.email||''}`)).sort(sorter(c=>c.name,c=>c.congregation_name));
   const status=x=>x.checked_in_at?`<span class="ci-in">✓ Checked in ${tm(x.checked_in_at)}</span>`:'<span class="ci-out">Not checked in</span>';
@@ -454,7 +454,7 @@ async function renderWorkspace(){
       availVolunteers.sort(so.value==='cong'?(a,b)=>cmpCong(a.congregation,b.congregation)||fam(a,b):so.value==='first'?(a,b)=>cmpText(a.first_name,b.first_name)||cmpText(a.last_name,b.last_name):fam)}
      box.innerHTML=availVolunteers.length?`<div class="table-wrap"><table><thead><tr><th>Volunteer</th><th>Availability</th><th></th></tr></thead><tbody>${availVolunteers.map(v=>{const ids=availMap[v.id]||[];return `<tr data-name="${esc((v.first_name+' '+v.last_name+' '+(v.congregation||'')).toLowerCase())}"><td><strong>${esc(v.first_name+' '+v.last_name)}</strong><br><span class="muted">${esc(v.gender)}${v.congregation?' · '+esc(v.congregation):''}</span></td><td>${Number(v.unavailable)?'<span class="pill na-pill">Not available</span>':availSummary(v.id)?`<span class="pill">${esc(availSummary(v.id))}</span>`:'<span class="good">Entire event</span>'}${!Number(v.unavailable)&&limitText(v)?` <span class="pill limit-pill">${esc(limitText(v))}</span>`:''}</td><td><button class="secondary aedit" data-id="${v.id}">Set Availability</button></td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">No active volunteers yet.</div>';
      box.querySelectorAll('.aedit').forEach(b=>b.onclick=()=>openAvailability(b.dataset.id));
-     const as=section.querySelector('#avail-search');if(as)as.oninput=()=>{const t=as.value.trim().toLowerCase();box.querySelectorAll('tbody tr').forEach(r=>r.classList.toggle('hidden',!!t&&!r.dataset.name.includes(t)))};
+     const as=section.querySelector('#avail-search');if(as)as.oninput=()=>{const t=as.value.trim().toLowerCase();box.querySelectorAll('tbody tr').forEach(r=>r.classList.toggle('hidden',!!t&&!matchWords(r.dataset.name,t)))};
    }catch(e){section.querySelector('#avail-list').innerHTML=`<div class="empty error-box">${esc(e.message)}</div>`}
  }
  const AV_PARTS={morning:['00:00','12:00','Morning','before 12 PM'],afternoon:['12:00','23:59','Afternoon','12 PM on']};
@@ -516,7 +516,9 @@ async function renderWorkspace(){
 
  if(root.querySelector('#nav-avail'))root.querySelector('#nav-avail').onclick=showAvailability;
 
- const cmpText=(a,b)=>String(a||'').trim().localeCompare(String(b||'').trim(),undefined,{sensitivity:'base',numeric:true});
+ // Search: every typed word must appear somewhere (so first+last in any order works).
+const matchWords=(text,q)=>{const t=String(text||'').toLowerCase();return String(q||'').toLowerCase().split(/\s+/).filter(Boolean).every(w=>t.includes(w))};
+const cmpText=(a,b)=>String(a||'').trim().localeCompare(String(b||'').trim(),undefined,{sensitivity:'base',numeric:true});
 const cmpCong=(a,b)=>{const x=String(a||'').trim(),y=String(b||'').trim();if(!x&&y)return 1;if(x&&!y)return -1;return cmpText(x,y)};
 const savedSort=(key,def,allowed)=>{try{const v=localStorage.getItem(key);return allowed.includes(v)?v:def}catch{return def}};
 const saveSort=(key,v)=>{try{localStorage.setItem(key,v)}catch{}};
@@ -609,7 +611,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    el.innerHTML=`<div class="vpicker-head"><input class="vpicker-search" placeholder="Search ${pool.length} eligible volunteer${pool.length===1?'':'s'}…" autocomplete="off"><button type="button" class="icon-button vpicker-close" aria-label="Close">×</button></div><div class="vpicker-list"></div>`;
    (btn.closest('.open-spot-row')||btn.closest('.extra-add')).after(el);
    const list=el.querySelector('.vpicker-list'),inp=el.querySelector('.vpicker-search');
-   const draw=()=>{const t=inp.value.trim().toLowerCase(),m=pool.filter(v=>!t||`${v.first_name} ${v.last_name}`.toLowerCase().includes(t));
+   const draw=()=>{const t=inp.value.trim().toLowerCase(),m=pool.filter(v=>!t||matchWords(`${v.first_name} ${v.last_name} ${v.congregation||''}`,t));
      list.innerHTML=m.length?m.map(v=>{const busy=Number(v.unavailable)?'Not available':busyNote(v,slot);return `<button type="button" class="vpicker-item ${busy?'is-busy':''}" data-id="${v.id}"><span>${esc(v.first_name+' '+v.last_name)}${v.minor?' <em>minor</em>':''}</span>${busy?`<small>${esc(busy)}</small>`:''}</button>`}).join(''):`<div class="muted vpicker-empty">${pool.length?'No match.':'No eligible volunteers for this shift.'}</div>`;
      list.querySelectorAll('.vpicker-item').forEach(i=>i.onclick=async()=>{i.disabled=true;try{if(await assignToSlot(slotId,i.dataset.id))await refreshScheduleView();else i.disabled=false}catch(e){showNotice('Could Not Add Volunteer',e.message,'error');i.disabled=false}})};
    inp.oninput=draw;inp.onkeydown=e=>{if(e.key==='Escape')el.remove();if(e.key==='Enter'){e.preventDefault();list.querySelector('.vpicker-item')?.click()}};
@@ -620,7 +622,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    const search=section.querySelector('#schedule-search'),q=(search?.value||'').trim().toLowerCase(),clear=section.querySelector('#clear-schedule-search'),status=section.querySelector('#schedule-search-status');
    if(clear)clear.classList.toggle('hidden',!q);
    let visible=currentSchedule;
-   if(q)visible=currentSchedule.filter(a=>{const v=scheduleVolunteers.find(x=>x.id===a.volunteer_id);return ((v?.first_name||'')+' '+(v?.last_name||'')).toLowerCase().includes(q)});
+   if(q)visible=currentSchedule.filter(a=>{const v=scheduleVolunteers.find(x=>x.id===a.volunteer_id);return matchWords((v?.first_name||'')+' '+(v?.last_name||''),q)});
    // Every time slot, with its assigned people (slots with nobody still appear).
    const bySlot=new Map();
    currentSlots.forEach(x=>bySlot.set(x.slot_id,{...x,rows:[]}));
@@ -677,7 +679,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    const q=(section.querySelector('#people-search')?.value||'').trim().toLowerCase(),by={};
    currentSchedule.slice().sort((a,b)=>`${a.date} ${a.start_time} ${a.task_name}`.localeCompare(`${b.date} ${b.start_time} ${b.task_name}`)).forEach(a=>{
      const v=scheduleVolunteers.find(x=>x.id===a.volunteer_id),name=v?`${v.first_name} ${v.last_name}`.trim():'Unknown Volunteer';
-     if(q&&!name.toLowerCase().includes(q))return;(by[name]??=[]).push(a)
+     if(q&&!matchWords(name,q))return;(by[name]??=[]).push(a)
    });
    const names=Object.keys(by).sort((a,b)=>a.localeCompare(b));
    if(!names.length){host.innerHTML='<div class="empty">No volunteer found.</div>';return}
@@ -695,7 +697,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    confirmationData.forEach(v=>{if(v.overall_status==='Confirmed All')counts.confirmed++;else if(v.overall_status==='Conflict')counts.conflict++;else if(v.overall_status==='Partial')counts.partial++;else counts.waiting++});
    summary.innerHTML=`<span>${confirmationData.length} volunteers</span><span>✓ ${counts.confirmed} confirmed</span><span>${counts.waiting} waiting</span><span>${counts.partial} partial</span><span>${counts.conflict} conflict</span><span>✉ ${confirmationData.filter(wasSent).length} sent</span><span>${confirmationData.filter(v=>!wasSent(v)).length} not sent</span>`;
    const visible=confirmationData.filter(v=>{
-     if(q&&!v.volunteer_name.toLowerCase().includes(q))return false;
+     if(q&&!matchWords(`${v.volunteer_name} ${v.congregation||''}`,q))return false;
      const k=v.overall_status==='Confirmed All'?'confirmed':v.overall_status==='Conflict'?'conflict':v.overall_status==='Partial'?'partial':'waiting';
      if(filter==='notsent')return !wasSent(v);if(filter==='sent')return wasSent(v);
      return filter==='all'||filter===k;
@@ -729,7 +731,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    {const rows=[...d.querySelectorAll('.communication-volunteer-list .checkline')],search=d.querySelector('#comm-search');
     const picked=()=>new Set([...d.querySelectorAll('.comm-cong-box:checked')].map(x=>x.value));
     const count=()=>{d.querySelector('#comm-count').textContent=`${d.querySelectorAll('.comm-volunteer:checked').length} selected`};
-    const apply=()=>{const cs=picked(),t=search.value.trim().toLowerCase();rows.forEach(r=>{const inCong=!cs.size||cs.has(r.dataset.cong);if(!inCong)r.querySelector('input').checked=false;r.classList.toggle('hidden',!inCong||(!!t&&!r.dataset.name.includes(t)))});count()};
+    const apply=()=>{const cs=picked(),t=search.value.trim().toLowerCase();rows.forEach(r=>{const inCong=!cs.size||cs.has(r.dataset.cong);if(!inCong)r.querySelector('input').checked=false;r.classList.toggle('hidden',!inCong||(!!t&&!matchWords(r.dataset.name,t)))});count()};
     d.querySelectorAll('.comm-cong-box').forEach(x=>x.onchange=()=>{rows.forEach(r=>{if(r.dataset.cong===x.value)r.querySelector('input').checked=x.checked});apply()});
     search.oninput=apply;d.querySelectorAll('.comm-volunteer').forEach(x=>x.onchange=count);
     d.querySelector('#comm-all').onclick=()=>{rows.forEach(r=>{if(!r.classList.contains('hidden'))r.querySelector('input').checked=true});count()};

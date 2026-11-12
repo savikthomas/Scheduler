@@ -261,11 +261,22 @@ async function renameCongregation(req:Request,env:Env,eventId:string){
 async function listVolunteers(req:Request,env:Env,eventId:string){
   const e=await getEvent(env,eventId); if(!e)return nf('Event not found');
   const u=new URL(req.url),q=clean(u.searchParams.get('q')),departmentId=clean(u.searchParams.get('department_id'));
-  const like=`%${q}%`;
   const where=departmentId?'event_id=? AND department_id=?':'event_id=?', base=departmentId?[eventId,departmentId]:[eventId];
-  const r=q
-    ? await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR family LIKE ? OR congregation LIKE ? OR (?<>'%%' AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),'(',''),')',''),'-',''),' ',''),'.',''),'+','') LIKE ?)) ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base,like,like,like,like,like,like,`%${q.replace(/\D/g,'')}%`,`%${q.replace(/\D/g,'')}%`).all<VolunteerRow>()
-    : await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where} ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base).all<VolunteerRow>();
+  const digitsOnly=(v:string)=>v.replace(/\D/g,'');
+  const phoneSql=`REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''),'(',''),')',''),'-',''),' ',''),'.',''),'+','')`;
+  let extra='',args:unknown[]=[];
+  if(q&&/^[\d\s()+.\-]+$/.test(q)&&digitsOnly(q)){
+    // Looks like a phone number: match the digits, ignoring formatting.
+    extra=` AND ${phoneSql} LIKE ?`;args=[`%${digitsOnly(q)}%`];
+  }else if(q){
+    // Every word must match somewhere, so "John Smith" or "Smith John" finds John Smith.
+    for(const w of q.split(/\s+/).filter(Boolean).slice(0,6)){
+      const like=`%${w}%`,dg=digitsOnly(w);
+      extra+=` AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR family LIKE ? OR congregation LIKE ?${dg?` OR ${phoneSql} LIKE ?`:''})`;
+      args.push(like,like,like,like,like,like,...(dg?[`%${dg}%`]:[]));
+    }
+  }
+  const r=await env.DB.prepare(`SELECT * FROM volunteers WHERE ${where}${extra} ORDER BY last_name COLLATE NOCASE,first_name COLLATE NOCASE`).bind(...base,...args).all<VolunteerRow>();
   const rm=await rolesFor(env,r.results.map(x=>x.id));
   return json({ok:true,volunteers:r.results.map(x=>({...x,minor:Number(x.minor||0),roles:rm[x.id]||[]})),congregations:await eventCongregations(env,eventId)});
 }
