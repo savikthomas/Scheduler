@@ -1223,7 +1223,15 @@ function b64urlText(v:string){
 function emailSafe(v:string){return v.replace(/[\r\n]+/g,' ').trim()}
 // RFC 2047: headers must be ASCII; encode the subject if it has characters like – or accents.
 function headerText(v:string){const t=emailSafe(v);return /^[\x20-\x7e]*$/.test(t)?t:`=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(t)))}?=`}
+// Reuse the Gmail access token (valid ~1 hour) instead of signing in for every email:
+// Cloudflare limits how many outside calls one request may make.
+let gmailTokenCache:{key:string,token:string,exp:number}={key:'',token:'',exp:0};
 async function gmailAccessToken(env:Env){
+ const key=`${env.GMAIL_CLIENT_ID}|${env.GMAIL_REFRESH_TOKEN}`;
+ if(gmailTokenCache.key===key&&gmailTokenCache.token&&Date.now()<gmailTokenCache.exp)return gmailTokenCache.token;
+ const t=await gmailAccessTokenFresh(env);gmailTokenCache={key,token:t.token,exp:Date.now()+Math.max(60,t.expiresIn-300)*1000};return t.token;
+}
+async function gmailAccessTokenFresh(env:Env){
  if(!env.GMAIL_CLIENT_ID||!env.GMAIL_CLIENT_SECRET||!env.GMAIL_REFRESH_TOKEN)throw new Error('Gmail sender is not configured.');
  const form=new URLSearchParams({client_id:env.GMAIL_CLIENT_ID,client_secret:env.GMAIL_CLIENT_SECRET,refresh_token:env.GMAIL_REFRESH_TOKEN,grant_type:'refresh_token'});
  const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:form});
@@ -1231,7 +1239,7 @@ async function gmailAccessToken(env:Env){
  if(!r.ok||!j.access_token){const code=String(j?.error||''),desc=String(j?.error_description||'');
   if(code==='invalid_grant')throw new Error(`Gmail sign-in has expired or was revoked (${desc||code}). The Gmail sender needs to be reconnected (new refresh token).`);
   throw new Error(`Unable to authorize the Gmail sender${code?` (${code}${desc?': '+desc:''})`:''}.`)}
- return String(j.access_token);
+ return {token:String(j.access_token),expiresIn:Number(j.expires_in)||3600};
 }
 async function gmailSend(env:Env,to:string,subject:string,textBody:string,htmlBody:string){
  const access=await gmailAccessToken(env),from=emailSafe(env.GMAIL_FROM||env.GMAIL_FROM_EMAIL||'rccainv@gmail.com');
