@@ -922,7 +922,10 @@ async function listSchedule(req:Request,env:Env,eventId:string){
    FROM slots s JOIN tasks t ON t.id=s.task_id
    WHERE s.event_id=? AND t.active=1 AND (?='' OR t.department_id=?) ORDER BY s.date,s.start_time,t.name
   `).bind(eventId,dep,dep).all<any>();
-  return json({ok:true,schedule:r.results,slots:sl.results});
+  // Volunteers with limited availability: which shifts fit their times (same rule as auto scheduling).
+  const d=await schedulingData(env,eventId);const avail:Record<string,string[]>={};
+  for(const [vid,set] of Object.entries(d.avail))avail[vid]=[...set];
+  return json({ok:true,schedule:r.results,slots:sl.results,avail});
 }
 // ---- Check-in (does not touch the schedule) --------------------------------------
 async function setCheckIn(req:Request,env:Env,eventId:string){

@@ -588,7 +588,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    section.querySelector('#send-reminders').onclick=()=>openCommunicationDialog('Reminder');
    await refreshScheduleView();
  }
- let currentSlots=[],showOpenOnly=false,currentSchedule=[],scheduleVolunteers=[],scheduleLocked=false,selectedAssignments=new Set();
+ let currentSlots=[],slotAvail={},showOpenOnly=false,currentSchedule=[],scheduleVolunteers=[],scheduleLocked=false,selectedAssignments=new Set();
  // ---- Volunteers without any assignment --------------------------------------------
  // Number of assignments each volunteer has (and their limit) for the pickers.
  function shiftCountMap(){const m={};currentSchedule.forEach(a=>m[a.volunteer_id]=(m[a.volunteer_id]||0)+1);return m}
@@ -610,7 +610,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
  async function refreshScheduleView(){
    try{
      const [r,lr,vr]=await Promise.all([api(`/api/events/${cfg.eventId}/schedule${depQuery()}`),api(`/api/events/${cfg.eventId}/schedule-lock`),api(`/api/events/${cfg.eventId}/volunteers${depQuery()}`)]);
-     currentSchedule=r.schedule||[];currentSlots=r.slots||[];scheduleLocked=!!lr.locked;scheduleVolunteers=(vr.volunteers||[]).filter(v=>v.active);selectedAssignments=new Set();updateNoShiftBtn();
+     currentSchedule=r.schedule||[];currentSlots=r.slots||[];slotAvail=r.avail||{};scheduleLocked=!!lr.locked;scheduleVolunteers=(vr.volunteers||[]).filter(v=>v.active);selectedAssignments=new Set();updateNoShiftBtn();
      const st=section.querySelector('#sch-lock'),lb=section.querySelector('#lock-sch');
      if(st){st.className='schedule-lock-state '+(scheduleLocked?'locked':'');st.innerHTML=scheduleLocked?`<strong>Schedule locked</strong><span>Existing assignments can only be changed by hand. Fill Open Slots and Distribute can still add people to empty spots (and as extras); Generate and Rebalance are off.</span>`:`<strong>Schedule not locked</strong><span>You can regenerate the schedule or adjust individual assignments.</span>`}
      if(lb){lb.textContent=scheduleLocked?'🔓 Unlock Schedule':'🔒 Lock Schedule';lb.classList.toggle('is-locked',scheduleLocked)}
@@ -626,16 +626,22 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    section.querySelectorAll('.vpicker').forEach(p=>p.remove());
    const slotId=btn.dataset.slot,slot=currentSlots.find(s=>s.slot_id===slotId)||currentSchedule.find(a=>a.slot_id===slotId)||{slot_id:slotId};
    const inSlot=new Set(currentSchedule.filter(a=>a.slot_id===slotId).map(a=>a.volunteer_id));
-   const pool=scheduleVolunteers.filter(v=>!inSlot.has(v.id)&&eligibleFor(v,slot)).sort((a,b)=>(Number(a.unavailable||0)-Number(b.unavailable||0))||`${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`,undefined,{sensitivity:'base'}));
+   // Only volunteers whose availability covers this shift (and not marked Not available).
+   const availOk=v=>!Number(v.unavailable)&&(!slotAvail[v.id]||slotAvail[v.id].includes(slotId));
+   const eligibleAll=scheduleVolunteers.filter(v=>!inSlot.has(v.id)&&eligibleFor(v,slot)).sort((a,b)=>`${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`,undefined,{sensitivity:'base'}));
+   const hiddenN=eligibleAll.filter(v=>!availOk(v)).length;let showAllAvail=false;
+   let pool=eligibleAll.filter(availOk);
    const el=document.createElement('div');el.className='vpicker';
-   el.innerHTML=`<div class="vpicker-head"><input class="vpicker-search" placeholder="Search ${pool.length} eligible volunteer${pool.length===1?'':'s'}…" autocomplete="off"><button type="button" class="icon-button vpicker-close" aria-label="Close">×</button></div><div class="vpicker-list"></div>`;
+   el.innerHTML=`<div class="vpicker-head"><input class="vpicker-search" placeholder="Search ${pool.length} available volunteer${pool.length===1?'':'s'}…" autocomplete="off"><button type="button" class="icon-button vpicker-close" aria-label="Close">×</button></div><div class="vpicker-list"></div>${hiddenN?`<button type="button" class="link-button vpicker-more">Show ${hiddenN} not available for this time</button>`:''}`;
    (btn.closest('.open-spot-row')||btn.closest('.extra-add')).after(el);
    const list=el.querySelector('.vpicker-list'),inp=el.querySelector('.vpicker-search');
    const draw=()=>{const t=inp.value.trim().toLowerCase(),m=pool.filter(v=>!t||matchWords(`${v.first_name} ${v.last_name} ${v.congregation||''}`,t));
-     const cm=shiftCountMap();list.innerHTML=m.length?m.map(v=>{const busy=Number(v.unavailable)?'Not available':busyNote(v,slot),n=cm[v.id]||0,lim=v.max_shifts===null||v.max_shifts===undefined||v.max_shifts===''?null:Number(v.max_shifts),full=lim!==null&&n>=lim;return `<button type="button" class="vpicker-item ${busy?'is-busy':''}" data-id="${v.id}"><span>${esc(v.first_name+' '+v.last_name)}${v.minor?' <em>minor</em>':''}</span><span class="vp-right">${busy?`<small>${esc(busy)}</small>`:''}<b class="vp-count ${n?'':'zero'} ${full?'full':''}" title="Assignments this volunteer already has">${esc(shiftCountText(v,cm))}</b></span></button>`}).join(''):`<div class="muted vpicker-empty">${pool.length?'No match.':'No eligible volunteers for this shift.'}</div>`;
+     const cm=shiftCountMap();list.innerHTML=m.length?m.map(v=>{const busy=Number(v.unavailable)?'Not available':!availOk(v)?'Not available at this time':busyNote(v,slot),n=cm[v.id]||0,lim=v.max_shifts===null||v.max_shifts===undefined||v.max_shifts===''?null:Number(v.max_shifts),full=lim!==null&&n>=lim;return `<button type="button" class="vpicker-item ${busy?'is-busy':''}" data-id="${v.id}"><span>${esc(v.first_name+' '+v.last_name)}${v.minor?' <em>minor</em>':''}</span><span class="vp-right">${busy?`<small>${esc(busy)}</small>`:''}<b class="vp-count ${n?'':'zero'} ${full?'full':''}" title="Assignments this volunteer already has">${esc(shiftCountText(v,cm))}</b></span></button>`}).join(''):`<div class="muted vpicker-empty">${pool.length?'No match.':eligibleAll.length?'No eligible volunteer is available at this time.':'No eligible volunteers for this shift.'}</div>`;
      list.querySelectorAll('.vpicker-item').forEach(i=>i.onclick=async()=>{i.disabled=true;try{if(await assignToSlot(slotId,i.dataset.id))await refreshScheduleView();else i.disabled=false}catch(e){showNotice('Could Not Add Volunteer',e.message,'error');i.disabled=false}})};
    inp.oninput=draw;inp.onkeydown=e=>{if(e.key==='Escape')el.remove();if(e.key==='Enter'){e.preventDefault();list.querySelector('.vpicker-item')?.click()}};
-   el.querySelector('.vpicker-close').onclick=()=>el.remove();draw();inp.focus();
+   el.querySelector('.vpicker-close').onclick=()=>el.remove();
+   const more=el.querySelector('.vpicker-more');if(more)more.onclick=()=>{showAllAvail=!showAllAvail;pool=showAllAvail?[...eligibleAll.filter(availOk),...eligibleAll.filter(v=>!availOk(v))]:eligibleAll.filter(availOk);more.textContent=showAllAvail?'Hide volunteers not available for this time':`Show ${hiddenN} not available for this time`;draw();inp.focus()};
+   draw();inp.focus();
  }
  function renderScheduleBoard(){
    const box=section.querySelector('#schedule-board'),sum=section.querySelector('#sch-summary'),rm=section.querySelector('#remove-selected');if(!box)return;

@@ -629,3 +629,4 @@ dialog>.dialog-head{padding:22px 22px 0}
 .vp-count{font-size:.74rem;font-weight:800;padding:2px 8px;border-radius:999px;background:#e8f3ee;color:#1f5a40;white-space:nowrap}
 .vp-count.zero{background:#fbeee4;color:#a5521b}
 .vp-count.full{background:#fdecea;color:#9b2c22}
+.vpicker-more{display:block;margin:6px 8px 4px;font-size:.84rem}
