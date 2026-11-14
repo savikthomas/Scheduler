@@ -625,3 +625,7 @@ dialog>.dialog-head{padding:22px 22px 0}
 .count-none-link.warn strong{color:#a5521b}
 #nsd>p,#nsd>#ns-search,#nsd>.ns-wrap{margin-left:24px!important;margin-right:24px!important;width:calc(100% - 48px)!important}
 #nsd>.dialog-actions{padding:14px 24px 20px}
+.vp-right{display:inline-flex;align-items:center;gap:8px;flex-shrink:0}
+.vp-count{font-size:.74rem;font-weight:800;padding:2px 8px;border-radius:999px;background:#e8f3ee;color:#1f5a40;white-space:nowrap}
+.vp-count.zero{background:#fbeee4;color:#a5521b}
+.vp-count.full{background:#fdecea;color:#9b2c22}
