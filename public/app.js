@@ -592,7 +592,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
      const [r,lr,vr]=await Promise.all([api(`/api/events/${cfg.eventId}/schedule${depQuery()}`),api(`/api/events/${cfg.eventId}/schedule-lock`),api(`/api/events/${cfg.eventId}/volunteers${depQuery()}`)]);
      currentSchedule=r.schedule||[];currentSlots=r.slots||[];scheduleLocked=!!lr.locked;scheduleVolunteers=(vr.volunteers||[]).filter(v=>v.active);selectedAssignments=new Set();
      const st=section.querySelector('#sch-lock'),lb=section.querySelector('#lock-sch');
-     if(st){st.className='schedule-lock-state '+(scheduleLocked?'locked':'');st.innerHTML=scheduleLocked?`<strong>Schedule locked</strong><span>Automatic tools (Generate, Fill Open Slots, Distribute, Rebalance) are turned off. Change assignments by hand, or unlock the schedule.</span>`:`<strong>Schedule not locked</strong><span>You can regenerate the schedule or adjust individual assignments.</span>`}
+     if(st){st.className='schedule-lock-state '+(scheduleLocked?'locked':'');st.innerHTML=scheduleLocked?`<strong>Schedule locked</strong><span>Existing assignments can only be changed by hand. Fill Open Slots and Distribute can still add people to empty spots (and as extras); Generate and Rebalance are off.</span>`:`<strong>Schedule not locked</strong><span>You can regenerate the schedule or adjust individual assignments.</span>`}
      if(lb){lb.textContent=scheduleLocked?'🔓 Unlock Schedule':'🔒 Lock Schedule';lb.classList.toggle('is-locked',scheduleLocked)}
      renderScheduleBoard();renderQuickReference();
    }catch(e){section.querySelector('#schedule-board').innerHTML=`<div class="empty error-box">${esc(e.message)}</div>`}
@@ -805,18 +805,18 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
 @media screen and (max-width:760px){.day{padding:14px}.grid{grid-template-columns:1fr}}`;
    w.document.open();w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(eventTitle)} - ${P?esc(P.label):'Schedule'}</title><style>${style}</style></head><body><div class="bar"><strong>${esc(eventTitle)}${dept?' · '+esc(dept):''} — ${P?esc(P.label):'Printable Schedule'}</strong><button onclick="window.print()">Print Schedule</button></div>${body||'<section class="day">No assignments.</section>'}</body></html>`);w.document.close();
  }
- function openDistribute(){if(scheduleLocked){showNotice('Schedule Is Locked','A locked schedule can only be changed by hand. Unlock the schedule first to use the automatic tools.','error');return}const dsd=root.querySelector('#dsd'),box=root.querySelector('#ds-tasks');
+ function openDistribute(){const dsd=root.querySelector('#dsd'),box=root.querySelector('#ds-tasks');
    const tasks=new Map();currentSlots.forEach(x=>{if(!x.task_id)return;const t=tasks.get(x.task_id)||{name:x.task_name,shifts:0};t.shifts++;tasks.set(x.task_id,t)});
    const busy=new Set(currentSchedule.map(a=>a.volunteer_id)),spare=scheduleVolunteers.filter(v=>!busy.has(v.id)&&!(v.roles||[]).some(r=>['Overseer','Assistant','Keyman'].includes(r))).length;
    const per={};currentSchedule.forEach(a=>per[a.volunteer_id]=(per[a.volunteer_id]||0)+1);const most=Math.max(0,...Object.values(per));
-   root.querySelector('#ds-sub').textContent=`${spare} volunteer${spare===1?' has':'s have'} no shift yet. The busiest volunteer has ${most} shift${most===1?'':'s'}.`;
+   root.querySelector('#ds-sub').textContent=`${spare} volunteer${spare===1?' has':'s have'} no shift yet. The busiest volunteer has ${most} shift${most===1?'':'s'}.`+(scheduleLocked?' The schedule is locked, so nobody is moved — spare volunteers are only added as extra helpers (and locked).':'');
    box.innerHTML=[...tasks.entries()].sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([id,t])=>`<label class="checkline"><input type="checkbox" name="ds-task" value="${id}"> ${esc(t.name)} <span class="muted">· ${t.shifts} shift${t.shifts===1?'':'s'}</span></label>`).join('')||'<div class="muted">No tasks.</div>';
    root.querySelector('#ds-err').textContent='';dsd.showModal();
    root.querySelector('#dsx').onclick=root.querySelector('#ds-cancel').onclick=()=>dsd.close();
    root.querySelector('#dsf').onsubmit=async ev=>{ev.preventDefault();const ids=[...root.querySelectorAll('[name=ds-task]:checked')].map(x=>x.value);if(!ids.length){root.querySelector('#ds-err').textContent='Select at least one task.';return}
      const n=new Date(),pad=x=>String(x).padStart(2,'0'),now=`${n.getFullYear()}-${pad(n.getMonth()+1)}-${pad(n.getDate())} ${pad(n.getHours())}:${pad(n.getMinutes())}`;
      const go=root.querySelector('#ds-go');go.disabled=true;try{const r=await api(`/api/events/${cfg.eventId}/schedule/distribute`,{method:'POST',body:JSON.stringify({department_id:selectedDepartment?.id||'',task_ids:ids,max_extra:Number(root.querySelector('#ds-max').value),now})});dsd.close();await refreshScheduleView();
-       showNotice('Volunteers Distributed',`${r.changed} shift${r.changed===1?'':'s'} moved from busier volunteers to less busy ones.\n${r.added} spare volunteer${r.added===1?' was':'s were'} added as extra helpers.${r.spare_left?`\n${r.spare_left} volunteer${r.spare_left===1?' still has':'s still have'} no shift (no eligible shift in the chosen tasks, or the extra-helper limit was reached).`:''}`,'success')}catch(e){root.querySelector('#ds-err').textContent=e.message}finally{go.disabled=false}};
+       showNotice('Volunteers Distributed',`${scheduleLocked?'Schedule is locked, so no shifts were moved.':`${r.changed} shift${r.changed===1?'':'s'} moved from busier volunteers to less busy ones.`}\n${r.added} spare volunteer${r.added===1?' was':'s were'} added as extra helpers.${r.spare_left?`\n${r.spare_left} volunteer${r.spare_left===1?' still has':'s still have'} no shift (no eligible shift in the chosen tasks, or the extra-helper limit was reached).`:''}`,'success')}catch(e){root.querySelector('#ds-err').textContent=e.message}finally{go.disabled=false}};
  }
  async function toggleScheduleLock(){
    const locking=!scheduleLocked,title=locking?'Lock Entire Schedule?':'Unlock Entire Schedule?';
@@ -836,8 +836,8 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    const b=section.querySelector('#rebalance-new');b.disabled=true;b.textContent='Rebalancing…';
    try{const r=await api(`/api/events/${cfg.eventId}/schedule/rebalance-new`,{method:'POST'});showNotice('Rebalance Complete',r.message||`${r.moved||0} assignment(s) moved.`,'success');await refreshScheduleView()}catch(e){showNotice('Could Not Rebalance',e.message,'error')}finally{b.disabled=false;b.textContent='Rebalance New Volunteers'}
  }
- async function fillOpen(){if(scheduleLocked){showNotice('Schedule Is Locked','A locked schedule can only be changed by hand. Unlock the schedule first to use the automatic tools.','error');return}
-   if(!await askConfirm({title:'Fill Open Slots?',text:'OurPortal will fill only currently open positions.',detail:'Existing assignments will not be moved. Eligibility, availability, exclusions and overlap rules will still be enforced.',ok:'Fill Open Slots'}))return;
+ async function fillOpen(){
+   if(!await askConfirm({title:'Fill Open Slots?',text:'OurPortal will fill only currently open positions.',detail:'Nobody already assigned is moved or removed'+(scheduleLocked?' (the schedule stays locked, and the new assignments are locked too)':'')+'. Each spot gets someone who is eligible, available, within their shift limit and free at that time — and a shift is only brothers, only sisters, or one family together.',ok:'Fill Open Slots'}))return;
    try{const r=await api(`/api/events/${cfg.eventId}/schedule/fill-open`,{method:'POST'});const m=`${r.created} open position(s) filled.${r.unfilled?` ${r.unfilled} position(s) remain unfilled.`:' All open positions are filled.'}`+unfilledText(r);showNotice('Open Slots Processed',m,r.unfilled?'error':'success');await refreshScheduleView()}catch(e){showNotice('Could Not Fill Open Slots',e.message,'error')}
  }
  if(root.querySelector('#nav-schedule'))root.querySelector('#nav-schedule').onclick=showSchedule;

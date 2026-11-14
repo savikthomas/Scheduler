@@ -588,7 +588,8 @@ function anyoneCompatible(v:SchedVolunteer,slot:SchedSlot,assigned:{volunteer_id
     const fam=v.family?.trim().toLowerCase();
     return !!fam&&peers.every(p=>p.family?.trim().toLowerCase()===fam);
   }
-  if(!(slot.eligibility.length===1&&slot.eligibility[0]==='Anyone'))return true;
+  // Every slot: brothers only, sisters only, or one family together. Different genders
+  // may share a shift only when they are from the same family.
   return peers.every(p=>p.gender===v.gender || (!!p.family&&!!v.family&&p.family.toLowerCase()===v.family.toLowerCase()));
 }
 // Minor rule: a minor may only serve in a slot that also has a non-minor from the
@@ -796,7 +797,8 @@ async function changeAssignmentVolunteer(req:Request,env:Env,eventId:string,assi
 const LOCKED_AUTO_MSG='The schedule is locked, so automatic changes are turned off. Make changes by hand, or unlock the schedule first.';
 async function fillOpenScheduleSlots(env:Env,eventId:string){
   const ev=await getEvent(env,eventId);if(!ev)return nf('Event not found');
-  if(ev.schedule_locked_at)return bad(LOCKED_AUTO_MSG);
+  // Allowed while locked: it only fills empty spots and never changes existing assignments.
+  const lockNew=ev.schedule_locked_at?1:0;
   const d=await schedulingData(env,eventId);
   if(!d.volunteers.length)return bad('Add at least one active volunteer.');
   const sm=new Map(d.slots.map(s=>[s.id,s])),vm=new Map(d.volunteers.map(v=>[v.id,v]));
@@ -826,7 +828,7 @@ async function fillOpenScheduleSlots(env:Env,eventId:string){
       }).sort((a,b)=>(total[a.id]-total[b.id])||((taskCount[a.id][s.task_id]||0)-(taskCount[b.id][s.task_id]||0))||(Math.random()-.5));
       if(!candidates.length){unfilled++;noteUnfilled(unfilledSlots,s,{...d,count:total},assigned);continue}
       const v=candidates[0],id=crypto.randomUUID(),now=new Date().toISOString();
-      rows.push([id,eventId,s.id,v.id,0,0,0,0,now,now]);
+      rows.push([id,eventId,s.id,v.id,lockNew,0,0,0,now,now]);
       assigned.push({id,slot_id:s.id,volunteer_id:v.id,date:s.date,start_time:s.start_time,end_time:s.end_time,task_name:s.task_name});
       total[v.id]++;taskCount[v.id][s.task_id]=(taskCount[v.id][s.task_id]||0)+1;
     }
@@ -930,7 +932,8 @@ async function setCheckIn(req:Request,env:Env,eventId:string){
 // is respected.
 async function distributeSpare(req:Request,env:Env,eventId:string){
   const ev=await getEvent(env,eventId);if(!ev)return nf('Event not found');
-  if(ev.schedule_locked_at)return bad(LOCKED_AUTO_MSG);
+  // Locked schedule: never move anyone; only add spare volunteers as extras (added locked).
+  const lockedAll=!!ev.schedule_locked_at;
   const b=await body(req)||{},departmentId=clean(b.department_id);
   const taskIds=new Set<string>(Array.isArray(b.task_ids)?b.task_ids.map(clean).filter(Boolean):[]);
   if(!taskIds.size)return bad('Select at least one task.');
@@ -945,7 +948,7 @@ async function distributeSpare(req:Request,env:Env,eventId:string){
   const fits=(v:SchedVolunteer,x:SchedSlot,others:any[])=>allowsEligibility(v,x.eligibility)&&autoSchedulable(v,x)&&(!x.department_id||v.department_id===x.department_id)&&(!x.assistant_area_id||v.assistant_area_id===x.assistant_area_id)&&!(d.avail[v.id]&&!d.avail[v.id].has(x.id))&&!d.excluded.has(`${v.id}|${x.id}`)&&anyoneCompatible(v,x,others,vm)&&minorOk(v,x.id,others,vm)&&!others.some(o=>o.volunteer_id===v.id&&(o.slot_id===x.id||slotOverlaps(x,o)))&&!uncoveredMinor(x.id,[...others,{slot_id:x.id,volunteer_id:v.id}],vm)&&minorFamilyOk(v,x.id,others,vm);
   const changes=new Map<string,string>(),inserts:any[][]=[];let moved=0;
   // 1) take over shifts from the busiest volunteers
-  for(let guard=0;guard<3000;guard++){
+  for(let guard=0;guard<(lockedAll?0:3000);guard++){
     let did=false;
     const takers=[...d.volunteers].sort((a,b)=>count[a.id]-count[b.id]||Math.random()-.5);
     for(const t of takers){
@@ -971,7 +974,7 @@ async function distributeSpare(req:Request,env:Env,eventId:string){
   }
   const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];
   for(const [id,vid] of changes){stmts.push(env.DB.prepare(`UPDATE assignments SET volunteer_id=?,published=0,email_sent=0,sms_sent=0,updated_at=? WHERE id=? AND event_id=? AND locked=0`).bind(vid,now,id,eventId));stmts.push(env.DB.prepare(`DELETE FROM confirmations WHERE assignment_id=?`).bind(id))}
-  for(const r of inserts)stmts.push(env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,0,0,0,0,?,?)`).bind(r[0],eventId,r[1],r[2],now,now));
+  for(const r of inserts)stmts.push(env.DB.prepare(`INSERT INTO assignments(id,event_id,slot_id,volunteer_id,locked,published,email_sent,sms_sent,created_at,updated_at) VALUES(?,?,?,?,?,0,0,0,?,?)`).bind(r[0],eventId,r[1],r[2],lockedAll?1:0,now,now));
   for(let i=0;i<stmts.length;i+=90)await env.DB.batch(stmts.slice(i,i+90));
   const spareLeft=d.volunteers.filter(v=>count[v.id]===0).length;
   return json({ok:true,moved,changed:changes.size,added,spare_left:spareLeft});
