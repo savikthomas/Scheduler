@@ -613,3 +613,15 @@ dialog>.dialog-head{padding:22px 22px 0}
 .av-mode{max-width:520px;grid-template-columns:repeat(3,1fr)}
 .av-mode .av-none-opt input:checked+span{background:#9b2c22}
 @media (max-width:520px){.av-mode{grid-template-columns:1fr}}
+.tg-lock-btn{margin-left:auto;border:1px solid var(--line-strong);background:#fff;color:#1f5a40;font-weight:700;font-size:.82rem;padding:5px 12px;border-radius:999px;cursor:pointer}
+.tg-lock-btn:hover{background:#eef4f1}
+.tg-lock-btn.is-locked{background:#1f5a40;color:#fff;border-color:#1f5a40}
+.tg-lock.part{background:#f2f2ef;color:#4b5a53}
+#no-shift-btn.has-none{border-color:#e3a57a;color:#a5521b}
+.ns-wrap{max-height:55vh;overflow:auto}
+.ns-wrap table{min-width:0}
+.ns-wrap tr.hidden{display:none}
+.count-none-link{padding:0;font:inherit;color:inherit}
+.count-none-link.warn strong{color:#a5521b}
+#nsd>p,#nsd>#ns-search,#nsd>.ns-wrap{margin-left:24px!important;margin-right:24px!important;width:calc(100% - 48px)!important}
+#nsd>.dialog-actions{padding:14px 24px 20px}

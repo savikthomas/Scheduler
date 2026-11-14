@@ -683,6 +683,16 @@ async function setOneAssignmentLock(env:Env,eventId:string,assignmentId:string,l
 }
 // Locks one time slot: its current people are locked, and Generate / Fill Open /
 // Rebalance leave the slot exactly as it is (no additions, no removals).
+// Lock or unlock every time slot (and its assignments) of one task.
+async function setTaskLock(env:Env,eventId:string,taskId:string,departmentId:string,locked:boolean){
+  if(!taskId)return bad('Task is required.');
+  const r=await env.DB.prepare(`SELECT s.id FROM slots s JOIN tasks t ON t.id=s.task_id WHERE s.event_id=? AND s.task_id=?${departmentId?' AND t.department_id=?':''}`).bind(...(departmentId?[eventId,taskId,departmentId]:[eventId,taskId])).all<{id:string}>();
+  if(!r.results.length)return nf('No time slots found for this task');
+  const now=new Date().toISOString(),stmts:D1PreparedStatement[]=[];
+  for(const x of r.results){stmts.push(env.DB.prepare(`UPDATE slots SET locked=?,updated_at=? WHERE id=? AND event_id=?`).bind(locked?1:0,now,x.id,eventId));stmts.push(env.DB.prepare(`UPDATE assignments SET locked=?,updated_at=? WHERE slot_id=? AND event_id=?`).bind(locked?1:0,now,x.id,eventId))}
+  for(let i=0;i<stmts.length;i+=90)await env.DB.batch(stmts.slice(i,i+90));
+  return json({ok:true,locked,slots:r.results.length});
+}
 async function setSlotLock(env:Env,eventId:string,slotId:string,locked:boolean){
   const s=await env.DB.prepare(`SELECT id FROM slots WHERE id=? AND event_id=?`).bind(slotId,eventId).first();
   if(!s)return nf('Time slot not found');
@@ -1595,6 +1605,8 @@ export default {async fetch(request,env):Promise<Response>{
   if(sls&&request.method==='PUT'){const b=await body(request);return setEntireScheduleLock(env,decodeURIComponent(sls[1]),!!b?.locked)}
   const sal=p.match(/^\/api\/events\/([^/]+)\/schedule\/assignments\/([^/]+)\/lock$/);
   if(sal&&request.method==='PUT'){const b=await body(request);return setOneAssignmentLock(env,decodeURIComponent(sal[1]),decodeURIComponent(sal[2]),!!b?.locked)}
+  const tlk=p.match(/^\/api\/events\/([^/]+)\/schedule\/task-lock$/);
+  if(tlk&&request.method==='PUT'){const b=await body(request);return setTaskLock(env,decodeURIComponent(tlk[1]),clean(b?.task_id),clean(b?.department_id),!!b?.locked)}
   const ssl=p.match(/^\/api\/events\/([^/]+)\/schedule\/slots\/([^/]+)\/lock$/);
   if(ssl&&request.method==='PUT'){const b=await body(request);return setSlotLock(env,decodeURIComponent(ssl[1]),decodeURIComponent(ssl[2]),!!b?.locked)}
   const sad=p.match(/^\/api\/events\/([^/]+)\/schedule\/slots\/([^/]+)\/assign$/);
