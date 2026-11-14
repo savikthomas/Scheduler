@@ -1237,11 +1237,12 @@ function eventDateText(start:string,end?:string|null){
  return `${long(start,{weekday:'long',month:'long',day:'numeric'})} – ${long(end,{weekday:'long',month:'long',day:'numeric',year:'numeric'})}`;
 }
 // Builds the schedule / reminder email. Always sent as plain text (better for spam filters).
-function scheduleEmailContent(o:{kind:string,mode:string,first:string,eventName:string,eventDate:string,department:string,assignments:any[],link:string}){
+function scheduleEmailContent(o:{kind:string,mode:string,first:string,eventName:string,eventDate:string,department:string,assignments:any[],link:string,updated?:boolean}){
  const dep=o.department.replace(/\s+department$/i,'').trim()||'Cleaning',depLower=dep.toLowerCase(),reminder=o.kind==='Reminder',withLink=o.mode==='Link'&&!!o.link;
- const subject=reminder?`Reminder: Your ${depLower} schedule for ${o.eventName}`:`Your ${depLower} schedule for ${o.eventName}`;
+ const updated=!!o.updated&&!reminder;
+ const subject=reminder?`Reminder: Your ${depLower} schedule for ${o.eventName}`:`${updated?'Updated: ':''}Your ${depLower} schedule for ${o.eventName}`;
  const intro=`Thank you for volunteering to help with ${depLower} at the upcoming circuit assembly${o.eventDate?` on ${o.eventDate}`:''}. We sincerely appreciate your willingness to support this arrangement.`;
- const lead=reminder?`As a friendly reminder, your assigned ${depLower} schedule is as follows:`:`Your assigned ${depLower} schedule is as follows:`;
+ const lead=reminder?`As a friendly reminder, your assigned ${depLower} schedule is as follows:`:updated?`Here is the updated schedule. Your assigned ${depLower} schedule is now as follows:`:`Your assigned ${depLower} schedule is as follows:`;
  const day=(d:string)=>{const x=new Date(d+'T12:00:00Z');return isNaN(+x)?d:x.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',timeZone:'UTC'})};
  const time=(a:any)=>`${fmt12(a.start_time)}${a.end_time?' – '+fmt12(a.end_time):''}`;
  const closing='If you have any questions, please feel free to reply to this email.',sign=['Your brothers,',`${dep} Department`];
@@ -1259,6 +1260,9 @@ async function sendScheduleEmails(request:Request,env:Env,eventId:string){
  const origin=new URL(request.url).origin,now=new Date().toISOString(),results:any[]=[];
  const deps=await env.DB.prepare(`SELECT id,name FROM departments WHERE event_id=?`).bind(eventId).all<any>();const depName=new Map(deps.results.map((d:any)=>[d.id,String(d.name||'').trim()]));
  const eventDate=eventDateText(event.start_date,event.end_date);
+ // Volunteers who were already emailed their schedule get an "updated schedule" version.
+ const prev=await env.DB.prepare(`SELECT DISTINCT volunteer_id FROM communication_log WHERE event_id=? AND channel='Email' AND status='Sent' AND kind LIKE 'Schedule%'`).bind(eventId).all<any>();
+ const emailedBefore=new Set(prev.results.map((x:any)=>x.volunteer_id));
  for(const v of Object.values(by) as any[]){
   if(selected&&!selected.has(v.id))continue;if(kind==='Reminder'&&!v.assignments.some((a:any)=>a.status==='Awaiting'))continue;
   if(!v.email){results.push({volunteer_id:v.id,name:v.name,status:'Skipped',error:'No email address'});continue}
@@ -1267,7 +1271,7 @@ async function sendScheduleEmails(request:Request,env:Env,eventId:string){
    const token=tokenString(),hash=await tokenHash(token);await env.DB.prepare(`INSERT INTO confirmation_links(event_id,volunteer_id,token_hash,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(event_id,volunteer_id) DO UPDATE SET token_hash=excluded.token_hash,updated_at=excluded.updated_at`).bind(eventId,v.id,hash,now,now).run();
    link=`${origin}/confirm/${token}`;
   }
-  const mail=scheduleEmailContent({kind,mode,first:v.first||v.name,eventName:event.name,eventDate,department:depName.get(v.department_id)||'Cleaning',assignments:v.assignments,link});
+  const mail=scheduleEmailContent({kind,mode,first:v.first||v.name,eventName:event.name,eventDate,department:depName.get(v.department_id)||'Cleaning',assignments:v.assignments,link,updated:emailedBefore.has(v.id)});
   const subject=mail.subject,textBody=mail.text;
   try{const provider=await gmailSendPlain(env,v.email,subject,textBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
   catch(e:any){await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Failed',String(e?.message||'Send failed').slice(0,300),now).run();results.push({volunteer_id:v.id,name:v.name,status:'Failed',error:e?.message||'Send failed'})}
