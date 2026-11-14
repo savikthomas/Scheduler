@@ -630,3 +630,5 @@ dialog>.dialog-head{padding:22px 22px 0}
 .vp-count.zero{background:#fbeee4;color:#a5521b}
 .vp-count.full{background:#fdecea;color:#9b2c22}
 .vpicker-more{display:block;margin:6px 8px 4px;font-size:.84rem}
+.sent-tag.changed{background:#fff3dc;color:#8a5a00}
+.warn-text{color:#8a5a00;font-weight:700}

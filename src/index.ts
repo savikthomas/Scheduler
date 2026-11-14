@@ -238,6 +238,9 @@ function ensureVolunteerColumns(env:Env){
     if(cr.results.length&&!cr.results.some(x=>x.name==='checked_in_at'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();
     if(!sr.results.some(x=>x.name==='locked'))await env.DB.prepare(`ALTER TABLE slots ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
+    // What each emailed schedule contained, to spot changes since it was sent.
+    const clr=await env.DB.prepare(`PRAGMA table_info(communication_log)`).all<{name:string}>().catch(()=>({results:[] as {name:string}[]}));
+    if(clr.results.length&&!clr.results.some(x=>x.name==="schedule_sig"))await env.DB.prepare(`ALTER TABLE communication_log ADD COLUMN schedule_sig TEXT`).run().catch(()=>{});
   })().catch(e=>{volunteerColumnsReady=null;throw e});
   return volunteerColumnsReady;
 }
@@ -1167,7 +1170,7 @@ async function confirmationDashboard(env:Env,eventId:string){
   if(!await getEvent(env,eventId))return nf('Event not found');
   await ensureConfirmationRows(env,eventId);
   const r=await env.DB.prepare(`
-    SELECT a.id assignment_id,a.volunteer_id,v.first_name,v.last_name,v.email,v.phone,v.congregation,
+    SELECT a.id assignment_id,a.volunteer_id,v.first_name,v.last_name,v.email,v.phone,v.congregation,a.created_at assigned_at,
            s.date,s.start_time,s.end_time,t.name task_name,
            COALESCE(c.status,'Awaiting') status,c.responded_at,c.note,
            CASE WHEN cl.token_hash IS NULL THEN 0 ELSE 1 END has_link,
@@ -1183,13 +1186,22 @@ async function confirmationDashboard(env:Env,eventId:string){
   const by:Record<string,any>={};
   for(const x of r.results){
     if(!by[x.volunteer_id])by[x.volunteer_id]={volunteer_id:x.volunteer_id,volunteer_name:`${x.first_name} ${x.last_name}`.trim(),email:x.email||'',phone:x.phone||'',congregation:x.congregation||'',has_link:!!x.has_link,first_viewed_at:x.first_viewed_at||'',last_viewed_at:x.last_viewed_at||'',view_count:Number(x.view_count||0),assignments:[]};
-    by[x.volunteer_id].assignments.push({assignment_id:x.assignment_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name,status:x.status,responded_at:x.responded_at||'',note:x.note||''});
+    by[x.volunteer_id].assignments.push({assignment_id:x.assignment_id,date:x.date,start_time:x.start_time,end_time:x.end_time,task_name:x.task_name,status:x.status,responded_at:x.responded_at||'',note:x.note||'',assigned_at:x.assigned_at||''});
   }
   // Latest message per volunteer and channel, so the page can show who has been sent what.
-  const log=await env.DB.prepare(`SELECT volunteer_id,channel,kind,status,provider_id,created_at FROM communication_log WHERE event_id=? ORDER BY created_at DESC`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
+  const log=await env.DB.prepare(`SELECT volunteer_id,channel,kind,status,provider_id,created_at,schedule_sig FROM communication_log WHERE event_id=? ORDER BY created_at DESC`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
   for(const c of log.results){const v=by[c.volunteer_id];if(!v)continue;const key=c.channel==='SMS'?'last_sms':'last_email';
     if(!v[key])v[key]={kind:c.kind,status:c.status,at:c.created_at,error:c.status==='Failed'?String(c.provider_id||''):''};
-    if(c.channel!=='SMS'&&c.status==='Sent'&&!v.last_email_sent)v.last_email_sent={kind:c.kind,at:c.created_at};}
+    if(c.channel!=='SMS'&&c.status==='Sent'&&!v.last_email_sent)v.last_email_sent={kind:c.kind,at:c.created_at};
+    if(c.channel!=='SMS'&&c.status==='Sent'&&String(c.kind||'').startsWith('Schedule')&&!v._lastSchedule)v._lastSchedule={at:c.created_at,sig:c.schedule_sig};}
+  // Changed since their schedule was last emailed? Exact for emails sent from now on (we keep
+  // what was sent). For older emails: a shift added or removed after it was sent.
+  const removed=await env.DB.prepare(`SELECT volunteer_id,MAX(created_at) at FROM schedule_exclusions WHERE event_id=? GROUP BY volunteer_id`).bind(eventId).all<any>().catch(()=>({results:[] as any[]}));
+  const removedAt=new Map(removed.results.map((x:any)=>[x.volunteer_id,String(x.at||'')]));
+  for(const v of Object.values(by) as any[]){const ls=v._lastSchedule;delete v._lastSchedule;if(!ls){v.changed_since_sent=false;continue}
+    v.changed_since_sent=ls.sig!=null?ls.sig!==scheduleSig(v.assignments):(v.assignments.some((a:any)=>a.assigned_at>ls.at)||(removedAt.get(v.volunteer_id)||'')>ls.at);
+    if(v.changed_since_sent)v.schedule_emailed_at=ls.at;
+    v.assignments.forEach((a:any)=>delete a.assigned_at);}
   const volunteers=Object.values(by).map((v:any)=>{
     const s=v.assignments.map((a:any)=>a.status);
     v.overall_status=s.length&&s.every((x:string)=>x==='Accepted')?'Confirmed All':
@@ -1260,6 +1272,11 @@ function eventDateText(start:string,end?:string|null){
  if(!start)return '';if(!end||end===start)return long(start,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
  return `${long(start,{weekday:'long',month:'long',day:'numeric'})} – ${long(end,{weekday:'long',month:'long',day:'numeric',year:'numeric'})}`;
 }
+// A volunteer's schedule as text (date, times, task of every shift), used to tell
+// whether their schedule changed after it was emailed.
+function scheduleSig(list:{date:string,start_time:string,end_time?:string|null,task_name:string}[]){
+ return list.map(a=>`${a.date}|${a.start_time}|${a.end_time||''}|${a.task_name}`).sort().join(';');
+}
 // Builds the schedule / reminder email. Always sent as plain text (better for spam filters).
 function scheduleEmailContent(o:{kind:string,mode:string,first:string,eventName:string,eventDate:string,department:string,assignments:any[],link:string,updated?:boolean}){
  const dep=o.department.replace(/\s+department$/i,'').trim()||'Cleaning',depLower=dep.toLowerCase(),reminder=o.kind==='Reminder',withLink=o.mode==='Link'&&!!o.link;
@@ -1297,7 +1314,7 @@ async function sendScheduleEmails(request:Request,env:Env,eventId:string){
   }
   const mail=scheduleEmailContent({kind,mode,first:v.first||v.name,eventName:event.name,eventDate,department:depName.get(v.department_id)||'Cleaning',assignments:v.assignments,link,updated:emailedBefore.has(v.id)});
   const subject=mail.subject,textBody=mail.text;
-  try{const provider=await gmailSendPlain(env,v.email,subject,textBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
+  try{const provider=await gmailSendPlain(env,v.email,subject,textBody);await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at,schedule_sig) VALUES(?,?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Sent',provider,now,scheduleSig(v.assignments)).run();results.push({volunteer_id:v.id,name:v.name,status:'Sent'})}
   catch(e:any){await env.DB.prepare(`INSERT INTO communication_log(id,event_id,volunteer_id,channel,kind,status,provider_id,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),eventId,v.id,'Email',`${kind} ${mode}`,'Failed',String(e?.message||'Send failed').slice(0,300),now).run();results.push({volunteer_id:v.id,name:v.name,status:'Failed',error:e?.message||'Send failed'})}
  }
  return json({ok:true,kind,mode,sent:results.filter(x=>x.status==='Sent').length,failed:results.filter(x=>x.status==='Failed').length,skipped:results.filter(x=>x.status==='Skipped').length,results});
