@@ -835,6 +835,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
 .day-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;padding-bottom:8px;margin-bottom:12px;border-bottom:2px solid #173f38}
 .kicker{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#5d6d67;margin-bottom:3px}.day-head h1{margin:0;font-size:22px}.tip{font-size:10px;color:#5d6d67}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:start}
+.grid.packed{display:flex;gap:10px;align-items:flex-start}.grid.packed>.col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:10px}
 .grid.one{grid-template-columns:1fr}.grid.one .task h3{font-size:16px}.grid.one .task th{width:110px;font-size:14px;padding:8px 10px}.grid.one .task th small{font-size:11px}.grid.one .task td{font-size:13px;padding:6px 10px 6px 0}.grid.one .nm{font-size:13px;padding:4px 10px}
 .tip .part{display:inline-block;margin-bottom:3px;padding:3px 10px;border-radius:999px;background:#173f38;color:#fff;font-size:12px;letter-spacing:.02em;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .task{border:1px solid #c9d5d0;border-radius:8px;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
@@ -843,8 +844,25 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
 .task th{width:74px;padding:5px 6px 5px 10px;text-align:left;vertical-align:top;font-size:11px;white-space:nowrap}.task th small{display:block;font-size:9px;font-weight:400;color:#5d6d67;margin-top:1px}
 .task td{padding:4px 8px 4px 0;font-size:11px;line-height:1.25}.nm{display:inline-block;margin:1px 3px 1px 0;padding:2px 7px;border:1px solid #d3dde9;border-radius:999px;background:#f3f6fb;font-weight:700;font-size:10px}
 @media print{@page{size:letter landscape;margin:.35in}body{background:#fff}.bar{display:none}.day{width:auto;max-width:none;margin:0;padding:0;box-shadow:none}.day+.day{break-before:page;page-break-before:always}.task header,.nm{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-@media screen and (max-width:760px){.day{padding:14px}.grid{grid-template-columns:1fr}}`;
-   w.document.open();w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(eventTitle)} - ${P?esc(P.label):'Schedule'}</title><style>${style}</style></head><body><div class="bar"><strong>${esc(eventTitle)}${dept?' · '+esc(dept):''} — ${P?esc(P.label):'Printable Schedule'}</strong><button onclick="window.print()">Print Schedule</button></div>${body||'<section class="day">No assignments.</section>'}</body></html>`);w.document.close();
+@media screen and (max-width:760px){.day{padding:14px}.grid{grid-template-columns:1fr}.grid.packed{flex-direction:column}.grid.packed>.col{width:100%}}`;
+   // Pack task cards into two columns: each card goes to the shorter column, so there are no
+   // gaps and it adapts to any schedule size (bathrooms stay first).
+   const packScript=`<script>(function(){function pack(){document.querySelectorAll('.grid:not(.one)').forEach(function(g){
+     var cards=[].slice.call(g.querySelectorAll('.task'));if(cards.length<2)return;
+     cards.forEach(function(c){g.appendChild(c)});[].slice.call(g.querySelectorAll(':scope>.col')).forEach(function(c){c.remove()});
+     g.classList.remove('packed');var w=g.clientWidth,gap=10,colW=(w-gap)/2;
+     var hs=cards.map(function(c){c.style.width=colW+'px';var h=c.getBoundingClientRect().height;c.style.width='';return h});
+     var cols=[document.createElement('div'),document.createElement('div')],tot=[0,0];cols.forEach(function(c){c.className='col'});
+     // Most even split (subset-sum over card heights); each column keeps the original order.
+     var ws=hs.map(function(h){return Math.max(1,Math.round(h+gap))}),total=ws.reduce(function(a,b){return a+b},0),half=Math.floor(total/2);
+     var from=new Int32Array(total+1).fill(-1),prev=new Int32Array(total+1).fill(-1),reach=new Uint8Array(total+1);reach[0]=1;
+     ws.forEach(function(wt,i){for(var t=total-wt;t>=0;t--){if(reach[t]&&!reach[t+wt]){reach[t+wt]=1;from[t+wt]=i;prev[t+wt]=t}}});
+     var best=half;while(best>0&&!reach[best])best--;var inFirst={};for(var t2=best;t2>0;t2=prev[t2])inFirst[from[t2]]=true;
+     if(!inFirst[0]){var flip={};cards.forEach(function(c,i){if(!inFirst[i])flip[i]=true});inFirst=flip}
+     cards.forEach(function(c,i){var k=inFirst[i]?0:1;cols[k].appendChild(c);tot[k]+=ws[i]});
+     g.classList.add('packed');g.appendChild(cols[0]);g.appendChild(cols[1]);});}
+     pack();window.addEventListener('beforeprint',pack);})();<\/script>`;
+   w.document.open();w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(eventTitle)} - ${P?esc(P.label):'Schedule'}</title><style>${style}</style></head><body><div class="bar"><strong>${esc(eventTitle)}${dept?' · '+esc(dept):''} — ${P?esc(P.label):'Printable Schedule'}</strong><button onclick="window.print()">Print Schedule</button></div>${body||'<section class="day">No assignments.</section>'}${packScript}</body></html>`);w.document.close();
  }
  function openDistribute(){const dsd=root.querySelector('#dsd'),box=root.querySelector('#ds-tasks');
    const tasks=new Map();currentSlots.forEach(x=>{if(!x.task_id)return;const t=tasks.get(x.task_id)||{name:x.task_name,shifts:0};t.shifts++;tasks.set(x.task_id,t)});
