@@ -238,7 +238,7 @@ function ensureVolunteerColumns(env:Env){
     if(cr.results.length&&!cr.results.some(x=>x.name==='checked_in_at'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
     // The cleaning section (from the section map) each congregation is responsible for.
     if(cr.results.length&&!cr.results.some(x=>x.name==='cleaning_section'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN cleaning_section TEXT`).run().catch(()=>{});
-    // Section map image (one common map per event; department_id is '').
+    // Section map image: one map per event + department.
     await env.DB.prepare(`CREATE TABLE IF NOT EXISTS section_maps(event_id TEXT NOT NULL,department_id TEXT NOT NULL,mime TEXT NOT NULL,data TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(event_id,department_id))`).run().catch(()=>{});
     const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();
     if(!sr.results.some(x=>x.name==='locked'))await env.DB.prepare(`ALTER TABLE slots ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
@@ -1521,7 +1521,7 @@ async function getSectionMap(env:Env,eventId:string,departmentId:string){
 }
 async function putSectionMap(req:Request,env:Env,eventId:string){
   const b=await body(req);if(!b)return bad('Invalid JSON');
-  const departmentId='';
+  const departmentId=clean(b.department_id);if(!departmentId)return bad('Department is required.');
   const m=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(b.data_url||''));
   if(!m)return bad('Upload a JPG, PNG or WEBP image.');
   if(m[2].length>MAP_MAX_CHARS)return bad('The map image is too large. Please use a smaller image.');
@@ -1620,10 +1620,11 @@ export default {async fetch(request,env):Promise<Response>{
   if(sep&&request.method==='POST')return shortEntryAdd(request,env,decodeURIComponent(sep[1]));
   const smap=p.match(/^\/api\/events\/([^/]+)\/section-map$/);
   if(smap){const ev=decodeURIComponent(smap[1]);
-    // One common map for the whole event (stored with an empty department).
-    if(request.method==='GET'||request.method==='HEAD')return getSectionMap(env,ev,'');
+    // One map per department (e.g. one map for Cleaning; another department can have its own).
+    const mapDep=clean(u.searchParams.get('department_id'));
+    if(request.method==='GET'||request.method==='HEAD')return getSectionMap(env,ev,mapDep);
     if(request.method==='PUT')return putSectionMap(request,env,ev);
-    if(request.method==='DELETE'){await env.DB.prepare(`DELETE FROM section_maps WHERE event_id=? AND department_id=?`).bind(ev,'').run();return json({ok:true})}}
+    if(request.method==='DELETE'){await env.DB.prepare(`DELETE FROM section_maps WHERE event_id=? AND department_id=?`).bind(ev,mapDep).run();return json({ok:true})}}
   const caps=p.match(/^\/api\/events\/([^/]+)\/captains$/);
   if(caps&&request.method==='GET')return listCaptains(env,decodeURIComponent(caps[1]),clean(u.searchParams.get('department_id')));
   if(caps&&request.method==='POST')return createCaptain(request,env,decodeURIComponent(caps[1]));

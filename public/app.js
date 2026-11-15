@@ -266,7 +266,7 @@ async function renderWorkspace(){
   root.querySelectorAll('.section-nav button').forEach(b=>b.classList.remove('active'));
   const nav=root.querySelector('#nav-captains'); if(nav)nav.classList.add('active');
   section.innerHTML=`<section class="slot-head"><div><h2 class="section-title">Congregation Captains</h2><div class="hint">Name and congregation are required. Email and phone are optional.</div></div><div class="slot-actions"><button class="primary" id="add-captain">Add Captain</button></div></section>
-   <details class="section-map-panel" id="map-panel" open><summary><strong>Section Map</strong><span class="muted" id="map-sub">One map for the whole event</span></summary><div class="map-body" id="map-body"><div class="loading">Loading map…</div></div></details>
+   <details class="section-map-panel" id="map-panel" open><summary><strong>Section Map</strong><span class="muted" id="map-sub">One map for this department</span></summary><div class="map-body" id="map-body"><div class="loading">Loading map…</div></div></details>
    <div class="count-row"><div id="captain-count" class="count"></div><label class="vol-sort">Sort <select id="cap-sort"><option value="name">Name</option><option value="cong">Congregation</option><option value="section">Cleaning section</option></select></label></div><div id="captains"><div class="loading">Loading captains…</div></div>`;
   const box=section.querySelector('#captains'); let rows=[];
   const capSort=section.querySelector('#cap-sort');capSort.value=savedSort('ourportal.capSort','name',['name','cong','section']);
@@ -289,19 +289,20 @@ async function renderWorkspace(){
   const mapBody=section.querySelector('#map-body');let mapVer=0,hasMap=false;
   try{if(localStorage.getItem('ourportal.mapOpen')==='0')section.querySelector('#map-panel').open=false}catch{}
   section.querySelector('#map-panel').addEventListener('toggle',e=>{try{localStorage.setItem('ourportal.mapOpen',e.target.open?'1':'0')}catch{}});
-  const mapUrl=()=>`/api/events/${cfg.eventId}/section-map?v=${mapVer}`;
+  const mapDepQ=()=>`department_id=${encodeURIComponent(selectedDepartment?.id||'')}`;
+  const mapUrl=()=>`/api/events/${cfg.eventId}/section-map?${mapDepQ()}&v=${mapVer}`;
   async function loadMap(){mapVer=Date.now();
    try{const r=await fetch(mapUrl(),{method:'HEAD',credentials:'same-origin'});hasMap=r.ok}catch{hasMap=false}
    mapBody.innerHTML=hasMap?`<button type="button" class="map-thumb" id="map-open" title="Click to view full size"><img src="${mapUrl()}" alt="Section map"></button><div class="map-actions"><button type="button" class="secondary" id="map-full">View Full Size</button><button type="button" class="secondary" id="map-up">Replace Map</button><button type="button" class="danger-soft" id="map-del">Remove Map</button></div>`
-    :`<div class="map-empty"><p>Upload a picture of the section map (a photo or screenshot — JPG or PNG). It will show here for everyone, so you can see where each congregation's section is.</p><button type="button" class="primary" id="map-up">Upload Map</button></div>`;
+    :`<div class="map-empty"><p>Upload a picture of the section map (a photo or screenshot — JPG or PNG). It will show here for everyone working on this department, so you can see where each congregation's section is.</p><button type="button" class="primary" id="map-up">Upload Map</button></div>`;
    mapBody.insertAdjacentHTML('beforeend','<input type="file" id="map-file" accept="image/*" hidden>');
    const file=mapBody.querySelector('#map-file');mapBody.querySelector('#map-up').onclick=()=>file.click();
    file.onchange=async()=>{const f=file.files[0];if(!f)return;const btn=mapBody.querySelector('#map-up'),old=btn.textContent;btn.disabled=true;btn.textContent='Uploading…';
-     try{const dataUrl=await shrinkImage(f);await api(`/api/events/${cfg.eventId}/section-map`,{method:'PUT',body:JSON.stringify({data_url:dataUrl})});await loadMap()}
+     try{const dataUrl=await shrinkImage(f);await api(`/api/events/${cfg.eventId}/section-map`,{method:'PUT',body:JSON.stringify({data_url:dataUrl,department_id:selectedDepartment?.id||''})});await loadMap()}
      catch(e){showNotice('Could Not Upload Map',e.message,'error');btn.disabled=false;btn.textContent=old}};
    if(hasMap){mapBody.querySelector('#map-open').onclick=mapBody.querySelector('#map-full').onclick=()=>openMapViewer();
     mapBody.querySelector('#map-del').onclick=async()=>{if(!await askConfirm({title:'Remove Section Map?',text:'The map will be removed for everyone. Cleaning sections entered for captains are kept.',ok:'Remove Map',danger:true}))return;
-     try{await api(`/api/events/${cfg.eventId}/section-map`,{method:'DELETE'});await loadMap()}catch(e){showNotice('Could Not Remove Map',e.message,'error')}}}
+     try{await api(`/api/events/${cfg.eventId}/section-map?${mapDepQ()}`,{method:'DELETE'});await loadMap()}catch(e){showNotice('Could Not Remove Map',e.message,'error')}}}
   }
   // Resize big photos so they upload quickly and fit the database limit.
   function shrinkImage(f){return new Promise((res,rej)=>{if(!/^image\//.test(f.type)){rej(new Error('Please choose an image file (JPG or PNG). For a PDF map, take a screenshot of it first.'));return}
