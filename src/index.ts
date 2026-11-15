@@ -236,6 +236,10 @@ function ensureVolunteerColumns(env:Env){
     await formatStoredPhonesOnce(env);
     const cr=await env.DB.prepare(`PRAGMA table_info(congregation_captains)`).all<{name:string}>();
     if(cr.results.length&&!cr.results.some(x=>x.name==='checked_in_at'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN checked_in_at TEXT`).run().catch(()=>{});
+    // The cleaning section (from the section map) each congregation is responsible for.
+    if(cr.results.length&&!cr.results.some(x=>x.name==='cleaning_section'))await env.DB.prepare(`ALTER TABLE congregation_captains ADD COLUMN cleaning_section TEXT`).run().catch(()=>{});
+    // Section map image (one common map per event; department_id is '').
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS section_maps(event_id TEXT NOT NULL,department_id TEXT NOT NULL,mime TEXT NOT NULL,data TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(event_id,department_id))`).run().catch(()=>{});
     const sr=await env.DB.prepare(`PRAGMA table_info(slots)`).all<{name:string}>();
     if(!sr.results.some(x=>x.name==='locked'))await env.DB.prepare(`ALTER TABLE slots ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`).run().catch(()=>{});
     // What each emailed schedule contained, to spot changes since it was sent.
@@ -1498,17 +1502,35 @@ async function cleaningDepartment(env:Env,eventId:string,departmentId:string){
   return {ok:true as const,id:d.id};
 }
 function parseCaptain(b:Record<string,unknown>){
-  const name=clean(b.name),congregation=clean(b.congregation_name),email=clean(b.email),phone=clean(b.phone);
+  const name=clean(b.name),congregation=clean(b.congregation_name),email=clean(b.email),phone=clean(b.phone),section=clean(b.cleaning_section);
+  if(section.length>200)return {error:'Cleaning section must be 200 characters or less'} as const;
   if(!name)return {error:'Name is required'} as const;
   if(!congregation)return {error:'Congregation name is required'} as const;
   if(name.length>120||congregation.length>120)return {error:'Name and congregation must be 120 characters or less'} as const;
   const emailError=emailFormatError(email); if(emailError)return {error:emailError} as const;
   const phoneError=phoneFormatError(phone); if(phoneError)return {error:phoneError} as const;
-  return {value:{name,congregation,email:email||null,phone:formatPhone(phone)||null}} as const;
+  return {value:{name,congregation,email:email||null,phone:formatPhone(phone)||null,section:section||null}} as const;
+}
+// ---- Section map (image) shown on the Congregation Captains page ----------------------
+const MAP_MAX_CHARS=1_800_000; // D1 rows are limited to ~2 MB; the page shrinks images to fit.
+async function getSectionMap(env:Env,eventId:string,departmentId:string){
+  const r=await env.DB.prepare(`SELECT mime,data,updated_at FROM section_maps WHERE event_id=? AND department_id=?`).bind(eventId,departmentId).first<any>();
+  if(!r)return new Response('No map',{status:404,headers:{'cache-control':'no-store'}});
+  const bin=atob(r.data),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+  return new Response(bytes,{headers:{'content-type':r.mime,'cache-control':'private, no-cache','last-modified':new Date(r.updated_at).toUTCString()}});
+}
+async function putSectionMap(req:Request,env:Env,eventId:string){
+  const b=await body(req);if(!b)return bad('Invalid JSON');
+  const departmentId='';
+  const m=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(b.data_url||''));
+  if(!m)return bad('Upload a JPG, PNG or WEBP image.');
+  if(m[2].length>MAP_MAX_CHARS)return bad('The map image is too large. Please use a smaller image.');
+  await env.DB.prepare(`INSERT INTO section_maps(event_id,department_id,mime,data,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(event_id,department_id) DO UPDATE SET mime=excluded.mime,data=excluded.data,updated_at=excluded.updated_at`).bind(eventId,departmentId,m[1],m[2],new Date().toISOString()).run();
+  return json({ok:true});
 }
 async function listCaptains(env:Env,eventId:string,departmentId:string){
   const gate=await cleaningDepartment(env,eventId,departmentId); if(!gate.ok)return gate.response;
-  const r=await env.DB.prepare(`SELECT id,event_id,department_id,name,email,phone,congregation_name,checked_in_at,created_at,updated_at FROM congregation_captains WHERE event_id=? AND department_id=? ORDER BY congregation_name COLLATE NOCASE,name COLLATE NOCASE`).bind(eventId,gate.id).all();
+  const r=await env.DB.prepare(`SELECT id,event_id,department_id,name,email,phone,congregation_name,cleaning_section,checked_in_at,created_at,updated_at FROM congregation_captains WHERE event_id=? AND department_id=? ORDER BY congregation_name COLLATE NOCASE,name COLLATE NOCASE`).bind(eventId,gate.id).all();
   return json({ok:true,captains:r.results});
 }
 async function createCaptain(req:Request,env:Env,eventId:string){
@@ -1516,7 +1538,7 @@ async function createCaptain(req:Request,env:Env,eventId:string){
   const gate=await cleaningDepartment(env,eventId,clean(b.department_id)); if(!gate.ok)return gate.response;
   const p=parseCaptain(b); if('error'in p)return bad(p.error);
   const id=crypto.randomUUID(),now=new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO congregation_captains(id,event_id,department_id,name,email,phone,congregation_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`).bind(id,eventId,gate.id,p.value.name,p.value.email,p.value.phone,p.value.congregation,now,now).run();
+  await env.DB.prepare(`INSERT INTO congregation_captains(id,event_id,department_id,name,email,phone,congregation_name,cleaning_section,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(id,eventId,gate.id,p.value.name,p.value.email,p.value.phone,p.value.congregation,p.value.section,now,now).run();
   return json({ok:true,id},201);
 }
 async function patchCaptain(req:Request,env:Env,eventId:string,id:string){
@@ -1524,9 +1546,9 @@ async function patchCaptain(req:Request,env:Env,eventId:string,id:string){
   const b=await body(req); if(!b)return bad('Invalid JSON');
   const gate=await cleaningDepartment(env,eventId,clean(b.department_id)||existing.department_id); if(!gate.ok)return gate.response;
   if(existing.department_id!==gate.id)return bad('Captain does not belong to this department.');
-  const merged={name:b.name??existing.name,congregation_name:b.congregation_name??existing.congregation_name,email:b.email??existing.email??'',phone:b.phone??existing.phone??'',department_id:gate.id};
+  const merged={name:b.name??existing.name,congregation_name:b.congregation_name??existing.congregation_name,email:b.email??existing.email??'',phone:b.phone??existing.phone??'',cleaning_section:b.cleaning_section??existing.cleaning_section??'',department_id:gate.id};
   const p=parseCaptain(merged); if('error'in p)return bad(p.error);
-  await env.DB.prepare(`UPDATE congregation_captains SET name=?,email=?,phone=?,congregation_name=?,updated_at=? WHERE id=? AND event_id=? AND department_id=?`).bind(p.value.name,p.value.email,p.value.phone,p.value.congregation,new Date().toISOString(),id,eventId,gate.id).run();
+  await env.DB.prepare(`UPDATE congregation_captains SET name=?,email=?,phone=?,congregation_name=?,cleaning_section=?,updated_at=? WHERE id=? AND event_id=? AND department_id=?`).bind(p.value.name,p.value.email,p.value.phone,p.value.congregation,p.value.section,new Date().toISOString(),id,eventId,gate.id).run();
   return json({ok:true,id});
 }
 async function deleteCaptain(env:Env,eventId:string,id:string,departmentId:string){
@@ -1596,6 +1618,12 @@ export default {async fetch(request,env):Promise<Response>{
   const sep=p.match(/^\/api\/e\/([^/]+)$/);
   if(sep&&request.method==='GET')return shortEntryData(env,decodeURIComponent(sep[1]));
   if(sep&&request.method==='POST')return shortEntryAdd(request,env,decodeURIComponent(sep[1]));
+  const smap=p.match(/^\/api\/events\/([^/]+)\/section-map$/);
+  if(smap){const ev=decodeURIComponent(smap[1]);
+    // One common map for the whole event (stored with an empty department).
+    if(request.method==='GET'||request.method==='HEAD')return getSectionMap(env,ev,'');
+    if(request.method==='PUT')return putSectionMap(request,env,ev);
+    if(request.method==='DELETE'){await env.DB.prepare(`DELETE FROM section_maps WHERE event_id=? AND department_id=?`).bind(ev,'').run();return json({ok:true})}}
   const caps=p.match(/^\/api\/events\/([^/]+)\/captains$/);
   if(caps&&request.method==='GET')return listCaptains(env,decodeURIComponent(caps[1]),clean(u.searchParams.get('department_id')));
   if(caps&&request.method==='POST')return createCaptain(request,env,decodeURIComponent(caps[1]));
