@@ -825,7 +825,7 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
    const isBath=n=>/bathroom|restroom/i.test(n)&&!/[,&]/.test(n);
    const taskOrder=(a,b)=>(isBath(b)-isBath(a))||a.localeCompare(b,undefined,{sensitivity:'base',numeric:true});
    const card=(task,slots)=>{const rows=Object.values(slots).sort((x,y)=>x.start.localeCompare(y.start));const people=rows.reduce((n,r)=>n+r.names.length,0);
-     return `<article class="task"><header><h3>${esc(task)}</h3><span>${rows.length} shift${rows.length===1?'':'s'} · ${people} volunteer${people===1?'':'s'}</span></header><table>${rows.map(r=>`<tr><th>${fmtClock(r.start)}${r.end?`<small>to ${fmtClock(r.end)}</small>`:''}</th><td>${r.names.sort((x,y)=>x.localeCompare(y)).map(n=>`<span class="nm">${esc(n)}</span>`).join('')}</td></tr>`).join('')}</table></article>`};
+     return `<article class="task"${isMenBath(task)?' data-pin="0"':isWomenBath(task)?' data-pin="1"':''}><header><h3>${esc(task)}</h3><span>${rows.length} shift${rows.length===1?'':'s'} · ${people} volunteer${people===1?'':'s'}</span></header><table>${rows.map(r=>`<tr><th>${fmtClock(r.start)}${r.end?`<small>to ${fmtClock(r.end)}</small>`:''}</th><td>${r.names.sort((x,y)=>x.localeCompare(y)).map(n=>`<span class="nm">${esc(n)}</span>`).join('')}</td></tr>`).join('')}</table></article>`};
    const eventTitle=document.querySelector('h1')?.textContent?.trim()||'Volunteer Schedule';
    const dept=(typeof selectedDepartment!=='undefined'&&selectedDepartment?.name)?selectedDepartment.name:'';
    const body=Object.keys(days).sort().map(date=>`<section class="day"><header class="day-head"><div><div class="kicker">${esc(eventTitle)}${dept?' · '+esc(dept):''}</div><h1>${esc(longDay(date))}</h1></div><div class="tip">${P?`<strong class="part">${esc(P.label)}</strong><br>`:''}Find your task, then your time.</div></header><div class="grid${Object.keys(days[date]).length===1?' one':''}">${Object.keys(days[date]).sort(taskOrder).map(t=>card(t,days[date][t])).join('')}</div></section>`).join('');
@@ -853,13 +853,18 @@ document.addEventListener('focusout',e=>{const t=e.target;if(t&&t.matches&&t.mat
      g.classList.remove('packed');var w=g.clientWidth,gap=10,colW=(w-gap)/2;
      var hs=cards.map(function(c){c.style.width=colW+'px';var h=c.getBoundingClientRect().height;c.style.width='';return h});
      var cols=[document.createElement('div'),document.createElement('div')],tot=[0,0];cols.forEach(function(c){c.className='col'});
-     // Most even split (subset-sum over card heights); each column keeps the original order.
-     var ws=hs.map(function(h){return Math.max(1,Math.round(h+gap))}),total=ws.reduce(function(a,b){return a+b},0),half=Math.floor(total/2);
-     var from=new Int32Array(total+1).fill(-1),prev=new Int32Array(total+1).fill(-1),reach=new Uint8Array(total+1);reach[0]=1;
-     ws.forEach(function(wt,i){for(var t=total-wt;t>=0;t--){if(reach[t]&&!reach[t+wt]){reach[t+wt]=1;from[t+wt]=i;prev[t+wt]=t}}});
-     var best=half;while(best>0&&!reach[best])best--;var inFirst={};for(var t2=best;t2>0;t2=prev[t2])inFirst[from[t2]]=true;
-     if(!inFirst[0]){var flip={};cards.forEach(function(c,i){if(!inFirst[i])flip[i]=true});inFirst=flip}
-     cards.forEach(function(c,i){var k=inFirst[i]?0:1;cols[k].appendChild(c);tot[k]+=ws[i]});
+     // Bathroom - Brothers always tops the left column and Bathroom - Sisters the right one.
+     // The other cards are split as evenly as possible (subset-sum over their heights);
+     // each column keeps the original order.
+     var ws=hs.map(function(h){return Math.max(1,Math.round(h+gap))});
+     var pinned=[[],[]],rest=[];cards.forEach(function(c,i){var p=c.getAttribute('data-pin');if(p==='0'||p==='1'){pinned[+p].push(i);tot[+p]+=ws[i]}else rest.push(i)});
+     var rsum=rest.reduce(function(a,i){return a+ws[i]},0),target=Math.max(0,Math.floor((rsum+tot[1]-tot[0])/2));
+     var from=new Int32Array(rsum+1).fill(-1),prev=new Int32Array(rsum+1).fill(-1),reach=new Uint8Array(rsum+1);reach[0]=1;
+     rest.forEach(function(i){var wt=ws[i];for(var t=rsum-wt;t>=0;t--){if(reach[t]&&!reach[t+wt]){reach[t+wt]=1;from[t+wt]=i;prev[t+wt]=t}}});
+     var best=-1,bd=1e9;for(var t=0;t<=rsum;t++)if(reach[t]){var d=Math.abs(t-target);if(d<bd){bd=d;best=t}}
+     var left={};for(var t2=best;t2>0;t2=prev[t2])left[from[t2]]=true;
+     pinned[0].forEach(function(i){cols[0].appendChild(cards[i])});pinned[1].forEach(function(i){cols[1].appendChild(cards[i])});
+     rest.forEach(function(i){var k=left[i]?0:1;cols[k].appendChild(cards[i]);tot[k]+=ws[i]});
      g.classList.add('packed');g.appendChild(cols[0]);g.appendChild(cols[1]);});}
      pack();window.addEventListener('beforeprint',pack);})();<\/script>`;
    w.document.open();w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(eventTitle)} - ${P?esc(P.label):'Schedule'}</title><style>${style}</style></head><body><div class="bar"><strong>${esc(eventTitle)}${dept?' · '+esc(dept):''} — ${P?esc(P.label):'Printable Schedule'}</strong><button onclick="window.print()">Print Schedule</button></div>${body||'<section class="day">No assignments.</section>'}${packScript}</body></html>`);w.document.close();
